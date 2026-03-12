@@ -5,6 +5,7 @@ Busca por ID da Oportunidade ou CPF (Salesforce).
 Design de referência: Direcional (Simulador Imobiliário).
 """
 
+import os
 import re
 
 import streamlit as st
@@ -346,7 +347,11 @@ o ranking do cliente associado no Salesforce.
 
             # Conecta ao Salesforce (ou reutiliza conexão da sessão)
             if st.session_state.sf is None:
-                preparar_variaveis_salesforce()
+                if "salesforce" in st.secrets:
+                    sec = st.secrets["salesforce"]
+                    os.environ["SALESFORCE_USER"] = sec.get("USER", "")
+                    os.environ["SALESFORCE_PASSWORD"] = sec.get("PASSWORD", "")
+                    os.environ["SALESFORCE_TOKEN"] = sec.get("TOKEN", "")
                 with st.spinner("Conectando ao Salesforce..."):
                     sf = conectar_salesforce()
                 if not sf:
