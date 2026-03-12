@@ -19,6 +19,16 @@ COR_BORDA = "#eef2f6"
 COR_TEXTO_MUTED = "#64748b"
 COR_INPUT_BG = "#f0f2f6"
 
+import os
+import streamlit as st
+from salesforce_api import conectar_salesforce
+
+def preparar_variaveis_salesforce():
+    # Se existir seção "salesforce" em secrets, copia para as variáveis de ambiente
+    if "salesforce" in st.secrets:
+        os.environ["SALESFORCE_USER"] = st.secrets["salesforce"]["USER"]
+        os.environ["SALESFORCE_PASSWORD"] = st.secrets["salesforce"]["PASSWORD"]
+        os.environ["SALESFORCE_TOKEN"] = st.secrets["salesforce"]["TOKEN"]
 
 def aplicar_estilo() -> None:
     st.markdown(
