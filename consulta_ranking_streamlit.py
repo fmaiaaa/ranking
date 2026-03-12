@@ -302,7 +302,7 @@ def consultar_por_cpf(sf, cpf_bruto: str):
 def main():
     st.set_page_config(
         page_title="Ranking do Cliente - Salesforce",
-        page_icon="📊",
+        page_icon="favicon.png",
         layout="centered",
     )
     aplicar_estilo()
