@@ -39,7 +39,7 @@ def aplicar_estilo() -> None:
             text-align: center;
         }}
 
-        .block-container {{ max-width: 900px !important; padding: 2rem !important; }}
+        .block-container {{ max-width: 1200px !important; padding: 2rem !important; }}
 
         div[data-baseweb="input"] {{
             border-radius: 8px !important;
@@ -125,6 +125,40 @@ def aplicar_estilo() -> None:
             color: {COR_AZUL_ESC};
             font-size: 0.8rem;
             opacity: 0.7;
+        }}
+
+        .hover-card {{
+            background-color: #ffffff;
+            border-radius: 12px;
+            padding: 18px 16px;
+            border: 1px solid #eef2f6;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+            transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease;
+            height: 130px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+        }}
+        .hover-card:hover {{
+            transform: translateY(-4px);
+            box-shadow: 0 10px 20px rgba(0, 44, 93, 0.15);
+            border-color: {COR_VERMELHO};
+        }}
+        .hover-card-label {{
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            color: {COR_TEXTO_MUTED};
+            margin-bottom: 4px;
+            font-weight: 700;
+        }}
+        .hover-card-value {{
+            font-size: 1.05rem;
+            font-weight: 800;
+            color: {COR_VERMELHO};
+            word-break: break-word;
+            text-align: center;
         }}
         </style>
         """,
@@ -280,81 +314,123 @@ def main():
         unsafe_allow_html=True,
     )
 
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-
-    st.markdown(
-        """
-Informe abaixo o **CPF do cliente** (com ou sem máscara) **ou**
-o **ID da Oportunidade** (`IDOportunidade__c`) para consultar
-o ranking do cliente associado no Salesforce.
-        """.strip()
-    )
-    entrada_principal = st.text_input("CPF ou ID da Oportunidade", value="")
-
+    # Estado compartilhado
     if "sf" not in st.session_state:
         st.session_state.sf = None
+    if "ultimo_resultado" not in st.session_state:
+        st.session_state.ultimo_resultado = None
 
-    if st.button("Consultar Ranking", type="primary", use_container_width=True):
+    # Texto explicativo com destaque para IDOportunidade__c em vermelho Direcional
+    st.markdown(
+        f"""
+<p style="text-align:center; margin-bottom:0.75rem; font-size:0.95rem; color:{COR_AZUL_ESC};">
+Informe abaixo o <b>CPF do cliente</b> (com ou sem máscara) ou o <b>ID da Oportunidade</b>
+(<span style="color:{COR_VERMELHO}; font-weight:800;">IDOportunidade__c</span>) para consultar
+o ranking do cliente associado no Salesforce.
+</p>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Campo de busca e botão
+    entrada_principal = st.text_input("CPF ou ID da Oportunidade", value="")
+
+    if st.button("Consultar Ranking", type="primary", use_container_width=True, key="btn_consultar"):
         texto = entrada_principal.strip()
         if not texto:
             st.warning("Por favor, informe um CPF ou ID da Oportunidade.")
-            st.markdown("</div>", unsafe_allow_html=True)
-            return
+        else:
+            # Decide: se entrada tem 11 dígitos é tratada como CPF, caso contrário como ID de Oportunidade
+            cpf_digitos = normalizar_cpf(texto)
+            eh_cpf = len(cpf_digitos) == 11
 
-        # Decide: se entrada tem 11 dígitos é tratada como CPF, caso contrário como ID de Oportunidade
-        cpf_digitos = normalizar_cpf(texto)
-        eh_cpf = len(cpf_digitos) == 11
+            # Conecta ao Salesforce (ou reutiliza conexão da sessão)
+            if st.session_state.sf is None:
+                with st.spinner("Conectando ao Salesforce..."):
+                    sf = conectar_salesforce()
+                if not sf:
+                    st.error(
+                        "Não foi possível conectar ao Salesforce. "
+                        "Verifique as variáveis de ambiente SALESFORCE_USER, SALESFORCE_PASSWORD e SALESFORCE_TOKEN"
+                    )
+                else:
+                    st.session_state.sf = sf
 
-        # Conecta ao Salesforce (ou reutiliza conexão da sessão)
-        if st.session_state.sf is None:
-            with st.spinner("Conectando ao Salesforce..."):
-                sf = conectar_salesforce()
-            if not sf:
-                st.error(
-                    "Não foi possível conectar ao Salesforce. "
-                    "Verifique as variáveis de ambiente SALESFORCE_USER, SALESFORCE_PASSWORD e SALESFORCE_TOKEN."
-                )
-                st.markdown("</div>", unsafe_allow_html=True)
-                return
-            st.session_state.sf = sf
+            if st.session_state.sf is not None:
+                with st.spinner("Consultando dados no Salesforce..."):
+                    if eh_cpf:
+                        opp, erro = consultar_por_cpf(st.session_state.sf, texto)
+                    else:
+                        opp, erro = consultar_ranking_por_id(st.session_state.sf, texto)
 
-        with st.spinner("Consultando dados no Salesforce..."):
-            if eh_cpf:
-                opp, erro = consultar_por_cpf(st.session_state.sf, texto)
-            else:
-                opp, erro = consultar_ranking_por_id(st.session_state.sf, texto)
+                if erro:
+                    st.markdown(
+                        f"""
+<div style="margin-top:16px; padding:12px 16px; border-radius:8px;
+            border:1px solid {COR_VERMELHO}; background:#fff5f5;
+            color:{COR_VERMELHO}; font-weight:600; text-align:center;">
+{erro}
+</div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    st.session_state.ultimo_resultado = None
+                else:
+                    conta = opp.get("Account") or {}
+                    dados_prontos = {
+                        "nome_conta": conta.get("Name"),
+                        "cpf": conta.get("CPF__c"),
+                        "ranking_conta": conta.get("Ranking__c"),
+                        "ranking_conta_score": conta.get("Ranking_Score__c"),
+                    }
+                    st.session_state.ultimo_resultado = dados_prontos
 
-        if erro:
-            st.error(erro)
-            st.markdown("</div>", unsafe_allow_html=True)
-            return
+    # Exibição dos dados logo abaixo do botão, dentro do mesmo card
+    dados = st.session_state.ultimo_resultado
+    if dados:
+        col1, col2, col3, col4 = st.columns(4)
 
-        conta = opp.get("Account") or {}
-        cpf_conta = conta.get("CPF__c")
-        ranking_conta = conta.get("Ranking__c")
-        ranking_score_conta = conta.get("Ranking_Score__c")
-        ranking_opp = opp.get("Ranking__c")
-        ranking_score_opp = opp.get("Ranking_Score__c")
+        with col1:
+            st.markdown(
+                f"""
+<div class="hover-card">
+  <div class="hover-card-label">Cliente</div>
+  <div class="hover-card-value">{dados.get('nome_conta') or '—'}</div>
+</div>
+                """,
+                unsafe_allow_html=True,
+            )
+        with col2:
+            st.markdown(
+                f"""
+<div class="hover-card">
+  <div class="hover-card-label">CPF</div>
+  <div class="hover-card-value">{dados.get('cpf') or '—'}</div>
+</div>
+                """,
+                unsafe_allow_html=True,
+            )
+        with col3:
+            st.markdown(
+                f"""
+<div class="hover-card">
+  <div class="hover-card-label">Ranking</div>
+  <div class="hover-card-value">{dados.get('ranking_conta') or '—'}</div>
+</div>
+                """,
+                unsafe_allow_html=True,
+            )
+        with col4:
+            st.markdown(
+                f"""
+<div class="hover-card">
+  <div class="hover-card-label">Score</div>
+  <div class="hover-card-value">{dados.get('ranking_conta_score') or '—'}</div>
+</div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-        st.subheader("Oportunidade encontrada")
-        st.write(f"**ID Salesforce da Oportunidade:** `{opp.get('Id')}`")
-        st.write(f"**Nome da Oportunidade:** `{opp.get('Name')}`")
-        st.write(f"**IDOportunidade__c:** `{opp.get('IDOportunidade__c')}`")
-
-        st.subheader("Conta (Cliente)")
-        st.write(f"**ID da Conta:** `{opp.get('AccountId')}`")
-        st.write(f"**Nome da Conta:** `{conta.get('Name')}`")
-        st.write(f"**CPF (Account.CPF__c):** `{cpf_conta}`")
-
-        st.subheader("Ranking do Cliente (Account)")
-        st.write(f"**Ranking__c:** `{ranking_conta}`")
-        st.write(f"**Ranking_Score__c:** `{ranking_score_conta}`")
-
-        st.subheader("Ranking na Oportunidade (se houver)")
-        st.write(f"**Opportunity.Ranking__c:** `{ranking_opp}`")
-        st.write(f"**Opportunity.Ranking_Score__c:** `{ranking_score_opp}`")
-
-    st.markdown("</div>", unsafe_allow_html=True)
     st.markdown('<div class="footer">Direcional Engenharia | Consulta de Ranking</div>', unsafe_allow_html=True)
 
 
