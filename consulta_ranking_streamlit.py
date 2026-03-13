@@ -310,7 +310,7 @@ def main():
     st.markdown(
         '<div class="header-container">'
         '<div class="header-title">Ranking Cliente</div>'
-        '<div class="header-subtitle">Consulta por Oportunidade ou CPF (Salesforce)</div>'
+        '<div class="header-subtitle">Consulta por Oportunidade ou CPF - Direcional</div>'
         '</div>',
         unsafe_allow_html=True,
     )
@@ -325,8 +325,8 @@ def main():
     st.markdown(
         f"""
 <p style="text-align:center; margin-bottom:0.75rem; font-size:0.95rem; color:{COR_AZUL_ESC};">
-Informe abaixo o <b>CPF do cliente</b> (com ou sem máscara) ou o <b>ID da Oportunidade</b>
-(<span style="color:{COR_VERMELHO}; font-weight:800;">IDOportunidade__c</span>) para consultar
+Informe abaixo o <b>CPF do cliente</b> ou o <b>ID da Oportunidade</b>
+para consultar
 o ranking do cliente associado no Salesforce.
 </p>
         """,
@@ -394,19 +394,9 @@ o ranking do cliente associado no Salesforce.
     # Exibição dos dados logo abaixo do botão, dentro do mesmo card
     dados = st.session_state.ultimo_resultado
     if dados:
-        col1, col2, col3, col4 = st.columns(4)
+        col1 = st.columns(1)
 
         with col1:
-            st.markdown(
-                f"""
-<div class="hover-card">
-  <div class="hover-card-label">Cliente</div>
-  <div class="hover-card-value">{dados.get('nome_conta') or '—'}</div>
-</div>
-                """,
-                unsafe_allow_html=True,
-            )
-        with col2:
             st.markdown(
                 f"""
 <div class="hover-card">
@@ -416,31 +406,10 @@ o ranking do cliente associado no Salesforce.
                 """,
                 unsafe_allow_html=True,
             )
-        with col3:
-            st.markdown(
-                f"""
-<div class="hover-card">
-  <div class="hover-card-label">Ranking</div>
-  <div class="hover-card-value">{dados.get('ranking_conta') or '—'}</div>
-</div>
-                """,
-                unsafe_allow_html=True,
-            )
-        with col4:
-            st.markdown(
-                f"""
-<div class="hover-card">
-  <div class="hover-card-label">Score</div>
-  <div class="hover-card-value">{dados.get('ranking_conta_score') or '—'}</div>
-</div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-    st.markdown('<div class="footer">Direcional Engenharia | Consulta de Ranking</div>', unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
     main()
+
 
 
