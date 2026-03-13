@@ -136,6 +136,7 @@ def aplicar_estilo() -> None:
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
             transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease;
             height: 130px;
+            width: 100%;
             display: flex;
             flex-direction: column;
             justify-content: center;
@@ -391,17 +392,15 @@ o ranking do cliente associado no Salesforce.
     # Exibição dos dados logo abaixo do botão, dentro do mesmo card
     dados = st.session_state.ultimo_resultado
     if dados:
-        col = st.columns(3)[1]
-        with col:
-            st.markdown(
-                f"""
+        st.markdown(
+            f"""
 <div class="hover-card">
   <div class="hover-card-label">Ranking do Cliente</div>
   <div class="hover-card-value">{dados.get('ranking_conta') or '—'}</div>
 </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            """,
+            unsafe_allow_html=True,
+        )
 
     st.markdown('<div class="footer">Direcional Engenharia | Consulta de Ranking</div>', unsafe_allow_html=True)
 
