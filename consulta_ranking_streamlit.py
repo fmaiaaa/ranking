@@ -384,23 +384,19 @@ o ranking do cliente associado no Salesforce.
                 else:
                     conta = opp.get("Account") or {}
                     dados_prontos = {
-                        "nome_conta": conta.get("Name"),
-                        "cpf": conta.get("CPF__c"),
                         "ranking_conta": conta.get("Ranking__c"),
-                        "ranking_conta_score": conta.get("Ranking_Score__c"),
                     }
                     st.session_state.ultimo_resultado = dados_prontos
 
     # Exibição dos dados logo abaixo do botão, dentro do mesmo card
     dados = st.session_state.ultimo_resultado
     if dados:
-        col3 = st.columns(1)
-
-        with col3:
+        col = st.columns(3)[1]
+        with col:
             st.markdown(
                 f"""
 <div class="hover-card">
-  <div class="hover-card-label">Ranking</div>
+  <div class="hover-card-label">Ranking do Cliente</div>
   <div class="hover-card-value">{dados.get('ranking_conta') or '—'}</div>
 </div>
                 """,
