@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Consulta de Ranking do Cliente - Streamlit
-Busca por ID da Oportunidade ou CPF (Salesforce).
-Design de referência: Direcional (Simulador Imobiliário).
+Consulta de Ranking do Cliente — Direcional
+Consulta por CPF no Salesforce. Design: Direcional.
 """
 
 import os
@@ -168,19 +167,6 @@ def aplicar_estilo() -> None:
     )
 
 
-def normalizar_id_oportunidade(valor: str) -> str:
-    """
-    Normaliza o ID da Oportunidade vindo da base (Looker/planilha):
-    - remove espaços, hífens, pontos e underscores
-    - converte para maiúsculo
-    """
-    if not valor:
-        return ""
-    s = str(valor).strip().upper()
-    s = re.sub(r"[\\s\\-\\._]+", "", s)
-    return s
-
-
 def normalizar_cpf(valor: str) -> str:
     """
     Normaliza CPF digitado pelo usuário removendo tudo que não é número.
@@ -188,74 +174,6 @@ def normalizar_cpf(valor: str) -> str:
     if not valor:
         return ""
     return re.sub(r"\D+", "", str(valor))
-
-
-def consultar_ranking_por_id(sf, id_oportunidade_bruto: str):
-    """
-    Consulta no Salesforce a oportunidade pelo campo customizado IDOportunidade__c
-    e retorna os dados relevantes para exibir o ranking do cliente.
-    """
-    if not id_oportunidade_bruto or not id_oportunidade_bruto.strip():
-        return None, "Informe um ID da Oportunidade."
-
-    # Mantém o valor original (como vem da base) para comparação direta
-    id_original = id_oportunidade_bruto.strip()
-    id_normalizado = normalizar_id_oportunidade(id_original)
-
-    # Busca principal: igualdade exata no campo IDOportunidade__c
-    # (assumindo que o valor armazenado no SF é igual ao ID que você digita).
-    soql = f"""
-        SELECT
-            Id,
-            Name,
-            IDOportunidade__c,
-            AccountId,
-            Account.Name,
-            Account.CPF__c,
-            Account.Ranking__c,
-            Account.Ranking_Score__c,
-            Ranking__c,
-            Ranking_Score__c
-        FROM Opportunity
-        WHERE IDOportunidade__c = '{id_original}'
-        LIMIT 10
-    """
-
-    try:
-        res = sf.query(soql)
-        registros = res.get("records", [])
-
-        # Se nada encontrado com igualdade exata, tenta por "contains" usando SOQL simples,
-        # para cobrir casos em que o campo tenha formatação diferente (hífens, pontos etc.).
-        if not registros:
-            soql_fallback = f"""
-                SELECT
-                    Id,
-                    Name,
-                    IDOportunidade__c,
-                    AccountId,
-                    Account.Name,
-                    Account.CPF__c,
-                    Account.Ranking__c,
-                    Account.Ranking_Score__c,
-                    Ranking__c,
-                    Ranking_Score__c
-                FROM Opportunity
-                WHERE IDOportunidade__c LIKE '%{id_normalizado}%'
-                LIMIT 10
-            """
-            res_fb = sf.query(soql_fallback)
-            registros = res_fb.get("records", [])
-
-        if not registros:
-            return None, f"Nenhuma oportunidade encontrada para o ID informado: {id_original!r}."
-
-        # Se houver mais de uma, pega a primeira (pode ser refinado depois se necessário)
-        opp = registros[0]
-        return opp, None
-
-    except Exception as e:
-        return None, f"Erro ao consultar Salesforce: {e}"
 
 
 def consultar_por_cpf(sf, cpf_bruto: str):
@@ -267,7 +185,7 @@ def consultar_por_cpf(sf, cpf_bruto: str):
     # pois Account.CPF__c está armazenado com máscara (ex.: 076.086.171-44).
     cpf_digitos = normalizar_cpf(cpf_bruto)
     if not cpf_digitos or len(cpf_digitos) != 11:
-        return None, "Informe um CPF válido (11 dígitos)."
+        return None, "Informe um CPF válido com 11 dígitos."
 
     cpf_mascarado = f"{cpf_digitos[0:3]}.{cpf_digitos[3:6]}.{cpf_digitos[6:9]}-{cpf_digitos[9:11]}"
 
@@ -293,16 +211,16 @@ def consultar_por_cpf(sf, cpf_bruto: str):
         res = sf.query(soql)
         registros = res.get("records", [])
         if not registros:
-            return None, f"Nenhuma oportunidade encontrada para o CPF informado: {cpf_bruto!r} (normalizado/máscara: {cpf_mascarado})."
+            return None, "Nenhum registro encontrado para o CPF informado."
         opp = registros[0]
         return opp, None
     except Exception as e:
-        return None, f"Erro ao consultar Salesforce por CPF: {e}"
+        return None, f"Erro ao consultar o Salesforce: {e}"
 
 
 def main():
     st.set_page_config(
-        page_title="Ranking do Cliente - Salesforce",
+        page_title="Consulta de Ranking — Direcional",
         page_icon="favicon.png",
         layout="centered",
     )
@@ -310,65 +228,56 @@ def main():
 
     st.markdown(
         '<div class="header-container">'
-        '<div class="header-title">Ranking Cliente</div>'
-        '<div class="header-subtitle">Consulta por Oportunidade ou CPF (Salesforce)</div>'
+        '<div class="header-title">Consulta de Ranking</div>'
+        '<div class="header-subtitle">Informe o CPF para consultar o ranking do cliente no Salesforce</div>'
         '</div>',
         unsafe_allow_html=True,
     )
 
-    # Estado compartilhado
     if "sf" not in st.session_state:
         st.session_state.sf = None
     if "ultimo_resultado" not in st.session_state:
         st.session_state.ultimo_resultado = None
 
-    # Texto explicativo com destaque para IDOportunidade__c em vermelho Direcional
     st.markdown(
         f"""
 <p style="text-align:center; margin-bottom:0.75rem; font-size:0.95rem; color:{COR_AZUL_ESC};">
-Informe abaixo o <b>CPF do cliente</b> (com ou sem máscara) ou o <b>ID da Oportunidade</b>
-(<span style="color:{COR_VERMELHO}; font-weight:800;">IDOportunidade__c</span>) para consultar
-o ranking do cliente associado no Salesforce.
+Digite o <b>CPF do cliente</b> (com ou sem formatação) para consultar o ranking.
 </p>
         """,
         unsafe_allow_html=True,
     )
 
-    # Campo de busca e botão
-    entrada_principal = st.text_input("CPF ou ID da Oportunidade", value="")
+    cpf_entrada = st.text_input("CPF do cliente", value="", placeholder="Ex.: 000.000.000-00")
 
-    if st.button("Consultar Ranking", type="primary", use_container_width=True, key="btn_consultar"):
-        texto = entrada_principal.strip()
+    if st.button("Consultar", type="primary", use_container_width=True, key="btn_consultar"):
+        texto = cpf_entrada.strip()
         if not texto:
-            st.warning("Por favor, informe um CPF ou ID da Oportunidade.")
+            st.warning("Informe o CPF do cliente para continuar.")
         else:
-            # Decide: se entrada tem 11 dígitos é tratada como CPF, caso contrário como ID de Oportunidade
             cpf_digitos = normalizar_cpf(texto)
-            eh_cpf = len(cpf_digitos) == 11
-
-            # Conecta ao Salesforce (ou reutiliza conexão da sessão)
-            if st.session_state.sf is None:
-                if "salesforce" in st.secrets:
-                    sec = st.secrets["salesforce"]
-                    os.environ["SALESFORCE_USER"] = sec.get("USER", "")
-                    os.environ["SALESFORCE_PASSWORD"] = sec.get("PASSWORD", "")
-                    os.environ["SALESFORCE_TOKEN"] = sec.get("TOKEN", "")
-                with st.spinner("Conectando ao Salesforce..."):
-                    sf = conectar_salesforce()
-                if not sf:
-                    st.error(
-                        "Não foi possível conectar ao Salesforce. "
-                        "Verifique as variáveis de ambiente SALESFORCE_USER, SALESFORCE_PASSWORD e SALESFORCE_TOKEN"
-                    )
-                else:
-                    st.session_state.sf = sf
-
-            if st.session_state.sf is not None:
-                with st.spinner("Consultando dados no Salesforce..."):
-                    if eh_cpf:
-                        opp, erro = consultar_por_cpf(st.session_state.sf, texto)
+            if len(cpf_digitos) != 11:
+                st.warning("O CPF deve conter 11 dígitos.")
+            else:
+                if st.session_state.sf is None:
+                    if "salesforce" in st.secrets:
+                        sec = st.secrets["salesforce"]
+                        os.environ["SALESFORCE_USER"] = sec.get("USER", "")
+                        os.environ["SALESFORCE_PASSWORD"] = sec.get("PASSWORD", "")
+                        os.environ["SALESFORCE_TOKEN"] = sec.get("TOKEN", "")
+                    with st.spinner("Conectando ao Salesforce..."):
+                        sf = conectar_salesforce()
+                    if not sf:
+                        st.error(
+                            "Não foi possível conectar ao Salesforce. "
+                            "Verifique a configuração das credenciais."
+                        )
                     else:
-                        opp, erro = consultar_ranking_por_id(st.session_state.sf, texto)
+                        st.session_state.sf = sf
+
+                if st.session_state.sf is not None:
+                    with st.spinner("Consultando..."):
+                        opp, erro = consultar_por_cpf(st.session_state.sf, texto)
 
                 if erro:
                     st.markdown(
