@@ -178,8 +178,8 @@ def normalizar_cpf(valor: str) -> str:
 
 def consultar_por_cpf(sf, cpf_bruto: str):
     """
-    Consulta oportunidades a partir do CPF da conta (Account.CPF__c)
-    e retorna a oportunidade mais recente encontrada + dados da conta.
+    Consulta no Salesforce pelo CPF da conta (Account.CPF__c)
+    e retorna o registro mais recente com o ranking do cliente.
     """
     # Normaliza para dígitos e mascara de volta no padrão XXX.XXX.XXX-XX,
     # pois Account.CPF__c está armazenado com máscara (ex.: 076.086.171-44).
@@ -278,25 +278,24 @@ Digite o <b>CPF do cliente</b> (com ou sem formatação) para consultar o rankin
                 if st.session_state.sf is not None:
                     with st.spinner("Consultando..."):
                         opp, erro = consultar_por_cpf(st.session_state.sf, texto)
-
-                if erro:
-                    st.markdown(
-                        f"""
+                    if erro:
+                        st.markdown(
+                            f"""
 <div style="margin-top:16px; padding:12px 16px; border-radius:8px;
             border:1px solid {COR_VERMELHO}; background:#fff5f5;
             color:{COR_VERMELHO}; font-weight:600; text-align:center;">
 {erro}
 </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-                    st.session_state.ultimo_resultado = None
-                else:
-                    conta = opp.get("Account") or {}
-                    dados_prontos = {
-                        "ranking_conta": conta.get("Ranking__c"),
-                    }
-                    st.session_state.ultimo_resultado = dados_prontos
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                        st.session_state.ultimo_resultado = None
+                    else:
+                        conta = opp.get("Account") or {}
+                        dados_prontos = {
+                            "ranking_conta": conta.get("Ranking__c"),
+                        }
+                        st.session_state.ultimo_resultado = dados_prontos
 
     # Exibição dos dados logo abaixo do botão, dentro do mesmo card
     dados = st.session_state.ultimo_resultado
@@ -311,7 +310,7 @@ Digite o <b>CPF do cliente</b> (com ou sem formatação) para consultar o rankin
             unsafe_allow_html=True,
         )
 
-    st.markdown('<div class="footer">Direcional Engenharia | Consulta de Ranking</div>', unsafe_allow_html=True)
+    st.markdown('<div class="footer">Direcional Engenharia</div>', unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
