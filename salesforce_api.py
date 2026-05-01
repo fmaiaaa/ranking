@@ -843,6 +843,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
 import os
+import hashlib
 from pathlib import Path
 import json
 import pytz
@@ -5295,6 +5296,12 @@ def aba_simulador_automacao(
                         except Exception:
                             pass
                 st.session_state["_sim_fechar_last_emp"] = emp_escolhido
+                # Chave do widget por empreendimento (não pelo índice na lista ordenada):
+                # índices podem coincidir entre empreendimentos e o Streamlit reutilizava o estado
+                # da unidade anterior quando ambos tinham o mesmo Identificador.
+                _emp_widget_slug = hashlib.sha1(
+                    str(emp_escolhido).encode("utf-8", errors="replace")
+                ).hexdigest()[:14]
 
                 def label_uni(uid):
                     u = unidades_disp[unidades_disp["Identificador"] == uid].iloc[0]
@@ -5316,13 +5323,12 @@ def aba_simulador_automacao(
                         return f"RECOMENDADA: {corpo}"
                     return corpo
 
-                _emp_idx_key = emp_names.index(emp_escolhido)
                 uni_escolhida_id = st.selectbox(
                     "Escolha a Unidade (recomendadas primeiro; depois por preço crescente):",
                     options=current_uni_ids,
                     index=min(idx_uni, len(current_uni_ids) - 1) if current_uni_ids else 0,
                     format_func=label_uni,
-                    key=f"sel_uni_empidx_{_emp_idx_key}",
+                    key=f"sel_uni_emp_{_emp_widget_slug}",
                 )
                 if uni_escolhida_id:
                     u_row = unidades_disp[unidades_disp['Identificador'] == uni_escolhida_id].iloc[0]
