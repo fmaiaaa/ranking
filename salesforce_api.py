@@ -1023,6 +1023,9 @@ def montar_mensagem_whatsapp_resumo(
     linhas.append(item("Valor de venda (lista)", f"R$ {fmt_br(v_total)}"))
     linhas.append(item("Desconto Volta ao Caixa", f"R$ {fmt_br(vc_apl)}"))
     linhas.append(item("Outros descontos", f"R$ {fmt_br(outros_apl_wa)}"))
+    _mot_wa = str(d.get("outros_descontos_motivo") or "").strip()
+    if _mot_wa:
+        linhas.append(item("Origem dos outros descontos", _mot_wa))
     linhas.append(item("Valor final da unidade", f"R$ {fmt_br(v_final_wa)}"))
     if d.get("unid_entrega"):
         linhas.append(item("Previsão de entrega", d.get("unid_entrega")))
@@ -4250,6 +4253,18 @@ def gerar_resumo_pdf(d, volta_caixa_val: float = 0.0):
         linha("Valor de venda (lista)", f"R$ {fmt_br(v_total)}", True)
         linha("Desconto Volta ao Caixa", f"R$ {fmt_br(vc_apl)}")
         linha("Outros descontos", f"R$ {fmt_br(outros_pdf)}")
+        _mot_pdf = str(d.get("outros_descontos_motivo") or "").strip()
+        if _mot_pdf:
+            pdf.set_font("Helvetica", "", 9)
+            pdf.set_text_color(70, 80, 95)
+            pdf.multi_cell(
+                largura_util,
+                4,
+                _pdf_text_seguro(f"Origem dos outros descontos: {_mot_pdf}"),
+                ln=True,
+            )
+            pdf.ln(1)
+            pdf.set_text_color(*AZUL)
         linha("Valor final da unidade", f"R$ {fmt_br(v_prop)}", True)
         if d.get("unid_entrega"):
             linha("Previsão de entrega", _pdf_text_seguro(d.get("unid_entrega")))
@@ -4389,6 +4404,16 @@ def enviar_email_smtp(destinatario, nome_cliente, pdf_bytes, dados_cliente, tipo
     except (TypeError, ValueError):
         _vf_num = max(0.0, _v_raw - _vc_mail - _out_mail)
     val_venda = fmt_br(max(0.0, _vf_num))
+    _out_fmt_mail = fmt_br(_out_mail)
+    _mot_mail_raw = str(dados_cliente.get("outros_descontos_motivo") or "").strip()
+    _mot_mail_esc = html_std.escape(_mot_mail_raw)
+    _html_outros_corretor = (
+        f'<tr><td>Outros descontos</td><td align="right">R$ {_out_fmt_mail}</td></tr>\n'
+        f'<tr><td colspan="2" style="font-size:12px;color:#475569;padding-top:4px;">'
+        f"<strong>Origem dos outros descontos:</strong> {_mot_mail_esc}</td></tr>\n"
+        if _mot_mail_raw
+        else f'<tr><td>Outros descontos</td><td align="right">R$ {_out_fmt_mail}</td></tr>\n'
+    )
     val_aval = fmt_br(dados_cliente.get('imovel_avaliacao', 0))
     entrada = fmt_br(dados_cliente.get('entrada_total', 0))
     finan = fmt_br(dados_cliente.get('finan_usado', 0))
@@ -4565,6 +4590,7 @@ def enviar_email_smtp(destinatario, nome_cliente, pdf_bytes, dados_cliente, tipo
 
                                     <h4 style="color: #002c5d; margin-top: 0;">Valores do Imóvel</h4>
                                     <table width="100%" border="1" cellspacing="0" cellpadding="8" style="border-collapse: collapse; border-color: #ddd; margin-bottom: 20px; font-size: 14px;">
+                                        {_html_outros_corretor}
                                         <tr style="background-color: #f2f2f2;">
                                             <td>Valor final da unidade (após descontos)</td>
                                             <td align="right" style="color: #e30613;"><b>R$ {val_venda}</b></td>
@@ -5337,6 +5363,10 @@ def aba_simulador_automacao(
             st.session_state['volta_caixa_key'] = ""
         if 'outros_descontos_key' not in st.session_state:
             st.session_state['outros_descontos_key'] = ""
+        if "outros_descontos_motivo_key" not in st.session_state:
+            st.session_state["outros_descontos_motivo_key"] = str(
+                st.session_state.dados_cliente.get("outros_descontos_motivo") or ""
+            )
         vc_input_val = 0.0
         outros_desc = 0.0
         v_liquido = 0.0
@@ -5357,6 +5387,9 @@ def aba_simulador_automacao(
                 )
             v_liquido = max(0.0, u_valor - vc_input_val - outros_desc)
         st.session_state.dados_cliente["outros_descontos"] = outros_desc
+        st.session_state.dados_cliente["outros_descontos_motivo"] = str(
+            st.session_state.get("outros_descontos_motivo_key") or ""
+        ).strip()
         st.session_state.dados_cliente["valor_final_unidade"] = v_liquido
         st.session_state.dados_cliente["volta_caixa_aplicado"] = vc_input_val
 
@@ -5796,6 +5829,13 @@ def aba_simulador_automacao(
                 placeholder="0,00",
                 help="Descontos adicionais; limitados ao saldo após o Volta ao Caixa.",
             )
+            st.text_area(
+                "Origem / justificativa dos outros descontos (opcional)",
+                key="outros_descontos_motivo_key",
+                height=88,
+                placeholder="Ex.: campanha comercial X, ajuste de tabela, condição especial aprovada por…",
+                help="Aparece nos resumos (tela, PDF, WhatsApp) para documentar a origem do valor.",
+            )
             _out_raw_ui = texto_moeda_para_float(st.session_state.get("outros_descontos_key"))
             outros_desc = max(0.0, _out_raw_ui)
             _max_out_ui = max(0.0, u_valor - vc_input_val)
@@ -5812,6 +5852,9 @@ def aba_simulador_automacao(
                 unsafe_allow_html=True,
             )
             st.session_state.dados_cliente["outros_descontos"] = outros_desc
+            st.session_state.dados_cliente["outros_descontos_motivo"] = str(
+                st.session_state.get("outros_descontos_motivo_key") or ""
+            ).strip()
             st.session_state.dados_cliente["valor_final_unidade"] = v_liquido
             st.session_state.dados_cliente["volta_caixa_aplicado"] = vc_input_val
         
@@ -5901,6 +5944,14 @@ def aba_simulador_automacao(
             f"{reais_streamlit_html(fmt_br(v_emp_total))}</span><br>"
             f"<b>Desconto Volta ao Caixa:</b> {reais_streamlit_html(fmt_br(_vc_sum))}<br>"
             f"<b>Outros descontos:</b> {reais_streamlit_html(fmt_br(_out_sum))}<br>"
+        )
+        _mot_sum = str(d.get("outros_descontos_motivo") or "").strip()
+        if _mot_sum:
+            _dim += (
+                f"<b>Origem dos outros descontos:</b> "
+                f"<span style=\"color:#334155;\">{html_std.escape(_mot_sum)}</span><br>"
+            )
+        _dim += (
             f"<b>Valor final da unidade:</b> <span style=\"color: #111111; font-weight: 700;\">"
             f"{reais_streamlit_html(fmt_br(v_final_sum))}</span><br>"
             f"<b>Volta ao caixa preservado:</b> {reais_streamlit_html(fmt_br(_vc_preservado_sum))}<br>"
