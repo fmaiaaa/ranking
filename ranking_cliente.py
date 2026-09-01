@@ -107,18 +107,56 @@ def _excluir_por_soql(sf, sobject_api: str, soql: str) -> List[str]:
 
 
 def conta_e_simulador(conta: Dict[str, Any]) -> bool:
-    return (conta.get("FirstName") or "").strip().upper() == PREFIXO_CONTA_SIMULADOR
+    """True se o nome da conta contém DIRESIMULATOR."""
+    return conta_nome_contem_simulador(conta)
 
 
-def _conta_id_e_simulador(sf, account_id: str) -> bool:
+def conta_nome_contem_simulador(conta: Dict[str, Any]) -> bool:
+    partes = (
+        conta.get("Name"),
+        conta.get("FirstName"),
+        conta.get("LastName"),
+    )
+    texto = " ".join(str(p or "") for p in partes).upper()
+    return PREFIXO_CONTA_SIMULADOR in texto
+
+
+def _buscar_conta_resumo(sf, account_id: str) -> Optional[Dict[str, Any]]:
     soql = (
-        f"SELECT FirstName FROM Account WHERE Id = '{_escape_soql(account_id)}' LIMIT 1"
+        f"SELECT Id, Name, FirstName, LastName FROM Account "
+        f"WHERE Id = '{_escape_soql(account_id)}' LIMIT 1"
     )
     res = sf.query(soql)
     registros = res.get("records") or []
-    if not registros:
+    return registros[0] if registros else None
+
+
+def _conta_id_e_simulador(sf, account_id: str) -> bool:
+    conta = _buscar_conta_resumo(sf, account_id)
+    if not conta:
         return False
-    return conta_e_simulador(registros[0])
+    return conta_nome_contem_simulador(conta)
+
+
+def _conta_id_pode_ser_excluida(
+    sf,
+    account_id: str,
+    *,
+    criada_nesta_consulta: bool = False,
+) -> bool:
+    """Só exclui contas DIRESIMULATOR criadas na consulta atual."""
+    if not criada_nesta_consulta:
+        return False
+    return _conta_id_e_simulador(sf, account_id)
+
+
+def _tentar_excluir_conta_simulador(sf, account_id: str) -> None:
+    if not _conta_id_e_simulador(sf, account_id):
+        return
+    try:
+        sf.Account.delete(account_id)
+    except Exception:
+        pass
 
 
 def criar_conta_temporaria(
@@ -155,10 +193,7 @@ def criar_conta_temporaria(
             try:
                 sf.Account.update(account_id, {"CPF__c": cpf_mask})
             except Exception as exc:
-                try:
-                    sf.Account.delete(account_id)
-                except Exception:
-                    pass
+                _tentar_excluir_conta_simulador(sf, account_id)
                 raise RuntimeError(
                     f"Falha ao definir CPF na conta temporária: {exc}"
                 ) from exc
@@ -185,8 +220,12 @@ def excluir_vinculos_conta(
     sf,
     account_id: str,
     cpf_bruto: Optional[str] = None,
+    *,
+    criada_nesta_consulta: bool = False,
 ) -> List[str]:
     """Remove objetos filhos da conta temporária (melhor esforço)."""
+    if not _conta_id_pode_ser_excluida(sf, account_id, criada_nesta_consulta=criada_nesta_consulta):
+        return []
     erros: List[str] = []
     aid = _escape_soql(account_id)
 
@@ -220,23 +259,27 @@ def excluir_vinculos_conta(
 
     cpf_digitos = normalizar_cpf(cpf_bruto or "")
     if len(cpf_digitos) == 11:
-        mascara = _escape_soql(cpf_mascarado(cpf_digitos))
-        for campo in ("CPF_Consultado__c", "CPF__c"):
+        for campo in ("Account__c", "Conta__c"):
             erros.extend(
                 _excluir_por_soql(
                     sf,
                     "Log_Risk3__c",
-                    f"SELECT Id FROM Log_Risk3__c WHERE {campo} = '{mascara}'",
+                    f"SELECT Id FROM Log_Risk3__c WHERE {campo} = '{aid}'",
                 )
             )
 
     return erros
 
 
-def excluir_conta_temporaria(sf, account_id: str) -> List[str]:
-    """Exclui a Account temporária somente se for DIRESIMULATOR."""
-    if not _conta_id_e_simulador(sf, account_id):
-        return [f"Conta {account_id} não é temporária ({PREFIXO_CONTA_SIMULADOR}); exclusão ignorada."]
+def excluir_conta_temporaria(
+    sf,
+    account_id: str,
+    *,
+    criada_nesta_consulta: bool = False,
+) -> List[str]:
+    """Exclui a Account somente se for DIRESIMULATOR criada nesta consulta."""
+    if not _conta_id_pode_ser_excluida(sf, account_id, criada_nesta_consulta=criada_nesta_consulta):
+        return []
     try:
         sf.Account.delete(account_id)
         return []
@@ -248,11 +291,24 @@ def limpar_conta_simulador(
     sf,
     account_id: str,
     cpf_bruto: Optional[str] = None,
+    *,
+    criada_nesta_consulta: bool = False,
 ) -> List[str]:
-    if not _conta_id_e_simulador(sf, account_id):
+    if not _conta_id_pode_ser_excluida(sf, account_id, criada_nesta_consulta=criada_nesta_consulta):
         return []
-    erros = excluir_vinculos_conta(sf, account_id, cpf_bruto)
-    erros.extend(excluir_conta_temporaria(sf, account_id))
+    erros = excluir_vinculos_conta(
+        sf,
+        account_id,
+        cpf_bruto,
+        criada_nesta_consulta=criada_nesta_consulta,
+    )
+    erros.extend(
+        excluir_conta_temporaria(
+            sf,
+            account_id,
+            criada_nesta_consulta=criada_nesta_consulta,
+        )
+    )
     return erros
 
 
@@ -546,8 +602,20 @@ def consultar_ranking_via_conta_temporaria(
         )
 
     account_id: Optional[str] = None
+    conta_criada_nesta_consulta = False
     resultado: Optional[ResultadoRanking] = None
     try:
+        conta_existente, _ = buscar_conta_por_cpf(sf, cpf_bruto)
+        if conta_existente:
+            return consultar_ranking(
+                sf,
+                cpf_bruto,
+                regional_comercial=regional_comercial,
+                timeout_seg=timeout_seg,
+                intervalo_seg=intervalo_seg,
+                barra_progresso=barra_progresso,
+            )
+
         conta_temp = criar_conta_temporaria(
             sf,
             cpf_bruto,
@@ -555,6 +623,7 @@ def consultar_ranking_via_conta_temporaria(
         )
         _tick_progresso(barra_progresso)
         account_id = conta_temp["Id"]
+        conta_criada_nesta_consulta = True
         opp_id = buscar_oportunidade_recente(sf, account_id)
 
         disparou, msg_r3, tentativas = disparar_integracao_risk3(
@@ -609,9 +678,14 @@ def consultar_ranking_via_conta_temporaria(
             atualizacao_solicitada=True,
         )
     finally:
-        if account_id:
+        if account_id and conta_criada_nesta_consulta:
             _tick_progresso(barra_progresso)
-            avisos = limpar_conta_simulador(sf, account_id, cpf_bruto)
+            avisos = limpar_conta_simulador(
+                sf,
+                account_id,
+                cpf_bruto,
+                criada_nesta_consulta=True,
+            )
             if resultado and avisos:
                 resumo = "; ".join(avisos[:2])
                 if len(avisos) > 2:
