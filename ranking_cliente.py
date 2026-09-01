@@ -11,12 +11,15 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 APEX_REST_UPDATE_RANKING = "update-ranking"
 APEX_ACTION_INTEGRACAO_RISK3 = "actions/custom/apex/IntegracaoRisk3"
+PREFIXO_CONTA_SIMULADOR = "DIRESIMULATOR"
+_RECORD_TYPE_CLIENTE_PF: Optional[str] = None
 
 
 def normalizar_cpf(valor: str) -> str:
@@ -38,6 +41,214 @@ def regional_comercial_padrao() -> str:
 
 def _escape_soql(valor: str) -> str:
     return str(valor).replace("\\", "\\\\").replace("'", "\\'")
+
+
+def gerar_token_conta_temporaria() -> str:
+    return secrets.token_hex(4).upper()
+
+
+def gerar_telefone_temporario() -> str:
+    sufixo = secrets.randbelow(100_000_000)
+    return f"(21) 9{sufixo // 10_000:04d}-{sufixo % 10_000:04d}"
+
+
+def _obter_record_type_cliente_pf(sf) -> str:
+    global _RECORD_TYPE_CLIENTE_PF
+    if _RECORD_TYPE_CLIENTE_PF:
+        return _RECORD_TYPE_CLIENTE_PF
+    soql = (
+        "SELECT Id FROM RecordType WHERE SObjectType = 'Account' "
+        "AND DeveloperName = 'ClientePessoaFisica' LIMIT 1"
+    )
+    res = sf.query(soql)
+    registros = res.get("records") or []
+    if not registros:
+        raise RuntimeError("RecordType ClientePessoaFisica não encontrado na org.")
+    _RECORD_TYPE_CLIENTE_PF = registros[0]["Id"]
+    return _RECORD_TYPE_CLIENTE_PF
+
+
+def _query_ids(sf, soql: str) -> List[str]:
+    try:
+        res = sf.query(soql)
+        return [rec["Id"] for rec in (res.get("records") or []) if rec.get("Id")]
+    except Exception:
+        return []
+
+
+def _resumir_erro_exclusao(exc: Exception) -> str:
+    texto = str(exc)
+    baixo = texto.lower()
+    if "insufficient access" in baixo:
+        return "sem permissão de exclusão"
+    if "delete_failed" in baixo or "não foi possível concluir" in baixo:
+        return "bloqueado por dependências"
+    if "cannot reference person contact" in baixo:
+        return "conta pessoa — excluir apenas a Account"
+    return texto[:100]
+
+
+def _excluir_por_soql(sf, sobject_api: str, soql: str) -> List[str]:
+    erros: List[str] = []
+    objeto = getattr(sf, sobject_api.replace("-", "_"), None)
+    if objeto is None:
+        return erros
+    for registro_id in _query_ids(sf, soql):
+        try:
+            objeto.delete(registro_id)
+        except Exception as exc:
+            erros.append(f"{sobject_api}: {_resumir_erro_exclusao(exc)}")
+    return erros
+
+
+def conta_e_simulador(conta: Dict[str, Any]) -> bool:
+    return (conta.get("FirstName") or "").strip().upper() == PREFIXO_CONTA_SIMULADOR
+
+
+def _conta_id_e_simulador(sf, account_id: str) -> bool:
+    soql = (
+        f"SELECT FirstName FROM Account WHERE Id = '{_escape_soql(account_id)}' LIMIT 1"
+    )
+    res = sf.query(soql)
+    registros = res.get("records") or []
+    if not registros:
+        return False
+    return conta_e_simulador(registros[0])
+
+
+def criar_conta_temporaria(
+    sf,
+    cpf_bruto: str,
+    *,
+    regional_comercial: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Cria Account PF temporária (DIRESIMULATOR + token).
+    O CPF é definido em etapa separada para contornar regra de duplicidade no insert.
+    """
+    cpf_digitos = normalizar_cpf(cpf_bruto)
+    if len(cpf_digitos) != 11:
+        raise ValueError("CPF deve conter 11 dígitos.")
+
+    regional = (regional_comercial or regional_comercial_padrao()).strip().upper()
+    token = gerar_token_conta_temporaria()
+    cpf_mask = cpf_mascarado(cpf_digitos)
+    ultimo_erro: Optional[Exception] = None
+
+    for _ in range(5):
+        payload = {
+            "RecordTypeId": _obter_record_type_cliente_pf(sf),
+            "FirstName": PREFIXO_CONTA_SIMULADOR,
+            "LastName": token,
+            "Regional__c": regional,
+            "Regional_Comercial__c": regional,
+            "TelefoneAdicional__c": gerar_telefone_temporario(),
+        }
+        try:
+            res = sf.Account.create(payload)
+            account_id = res["id"]
+            try:
+                sf.Account.update(account_id, {"CPF__c": cpf_mask})
+            except Exception as exc:
+                try:
+                    sf.Account.delete(account_id)
+                except Exception:
+                    pass
+                raise RuntimeError(
+                    f"Falha ao definir CPF na conta temporária: {exc}"
+                ) from exc
+
+            return {
+                "Id": account_id,
+                "Name": f"{PREFIXO_CONTA_SIMULADOR} {token}",
+                "FirstName": PREFIXO_CONTA_SIMULADOR,
+                "LastName": token,
+                "CPF__c": cpf_mask,
+                "token": token,
+            }
+        except Exception as exc:
+            ultimo_erro = exc
+            if "DUPLICATES_DETECTED" not in str(exc):
+                raise
+
+    raise RuntimeError(
+        f"Não foi possível criar conta temporária após várias tentativas: {ultimo_erro}"
+    )
+
+
+def excluir_vinculos_conta(
+    sf,
+    account_id: str,
+    cpf_bruto: Optional[str] = None,
+) -> List[str]:
+    """Remove objetos filhos da conta temporária (melhor esforço)."""
+    erros: List[str] = []
+    aid = _escape_soql(account_id)
+
+    erros.extend(
+        _excluir_por_soql(
+            sf,
+            "RelacionamentoComprador__c",
+            f"SELECT Id FROM RelacionamentoComprador__c WHERE Conta__c = '{aid}'",
+        )
+    )
+
+    oportunidades = _query_ids(
+        sf, f"SELECT Id FROM Opportunity WHERE AccountId = '{aid}'"
+    )
+    for opp_id in oportunidades:
+        erros.extend(
+            _excluir_por_soql(
+                sf,
+                "OpportunityContactRole",
+                f"SELECT Id FROM OpportunityContactRole WHERE OpportunityId = '{_escape_soql(opp_id)}'",
+            )
+        )
+
+    erros.extend(
+        _excluir_por_soql(
+            sf,
+            "Opportunity",
+            f"SELECT Id FROM Opportunity WHERE AccountId = '{aid}'",
+        )
+    )
+
+    cpf_digitos = normalizar_cpf(cpf_bruto or "")
+    if len(cpf_digitos) == 11:
+        mascara = _escape_soql(cpf_mascarado(cpf_digitos))
+        for campo in ("CPF_Consultado__c", "CPF__c"):
+            erros.extend(
+                _excluir_por_soql(
+                    sf,
+                    "Log_Risk3__c",
+                    f"SELECT Id FROM Log_Risk3__c WHERE {campo} = '{mascara}'",
+                )
+            )
+
+    return erros
+
+
+def excluir_conta_temporaria(sf, account_id: str) -> List[str]:
+    """Exclui a Account temporária somente se for DIRESIMULATOR."""
+    if not _conta_id_e_simulador(sf, account_id):
+        return [f"Conta {account_id} não é temporária ({PREFIXO_CONTA_SIMULADOR}); exclusão ignorada."]
+    try:
+        sf.Account.delete(account_id)
+        return []
+    except Exception as exc:
+        return [f"Account: {_resumir_erro_exclusao(exc)}"]
+
+
+def limpar_conta_simulador(
+    sf,
+    account_id: str,
+    cpf_bruto: Optional[str] = None,
+) -> List[str]:
+    if not _conta_id_e_simulador(sf, account_id):
+        return []
+    erros = excluir_vinculos_conta(sf, account_id, cpf_bruto)
+    erros.extend(excluir_conta_temporaria(sf, account_id))
+    return erros
 
 
 def _url_apex_rest(sf, resource: str) -> str:
@@ -305,6 +516,101 @@ def disparar_integracao_risk3(
     return False, ultimo_erro or "Falha ao invocar IntegracaoRisk3.", tentativas
 
 
+def consultar_ranking_via_conta_temporaria(
+    sf,
+    cpf_bruto: str,
+    *,
+    regional_comercial: Optional[str] = None,
+    timeout_seg: float = 90.0,
+    intervalo_seg: float = 5.0,
+) -> ResultadoRanking:
+    """
+    Cria conta DIRESIMULATOR, consulta Risk3, retorna ranking e remove tudo no finally.
+    """
+    cpf_digitos = normalizar_cpf(cpf_bruto)
+    if len(cpf_digitos) != 11:
+        return ResultadoRanking(
+            ok=False,
+            cpf=cpf_digitos,
+            mensagem="Informe um CPF válido com 11 dígitos.",
+        )
+
+    account_id: Optional[str] = None
+    resultado: Optional[ResultadoRanking] = None
+    try:
+        conta_temp = criar_conta_temporaria(
+            sf,
+            cpf_bruto,
+            regional_comercial=regional_comercial,
+        )
+        account_id = conta_temp["Id"]
+        opp_id = buscar_oportunidade_recente(sf, account_id)
+
+        disparou, msg_r3, tentativas = disparar_integracao_risk3(
+            sf, account_id, opp_id, bypass=True
+        )
+        ranking_poll: Optional[str] = None
+        err_poll: Optional[str] = None
+
+        if disparou:
+            ranking_poll, err_poll = aguardar_ranking_via_rest(
+                sf,
+                cpf_bruto,
+                timeout_seg=timeout_seg,
+                intervalo_seg=intervalo_seg,
+            )
+
+        if not ranking_poll:
+            try:
+                atual = ler_ranking_conta(sf, account_id)
+                ranking_poll = atual.get("Ranking__c")
+            except Exception:
+                pass
+
+        if ranking_poll:
+            mensagem = msg_r3 or "Ranking obtido via conta temporária DIRESIMULATOR."
+        elif disparou:
+            mensagem = err_poll or msg_r3 or "Consulta Risk3 enviada; ranking ainda não disponível."
+        else:
+            mensagem = msg_r3 or "Não foi possível disparar IntegracaoRisk3 na conta temporária."
+
+        resultado = ResultadoRanking(
+            ok=bool(ranking_poll),
+            cpf=cpf_digitos,
+            account_id=account_id,
+            account_name=conta_temp.get("Name"),
+            ranking=ranking_poll,
+            opportunity_id=opp_id,
+            mensagem=mensagem,
+            atualizacao_solicitada=True,
+            atualizacao_disparada=disparou,
+            atualizacao_erro=err_poll if disparou and not ranking_poll else None,
+            tentativas_disparo=tentativas,
+        )
+    except Exception as exc:
+        resultado = ResultadoRanking(
+            ok=False,
+            cpf=cpf_digitos,
+            account_id=account_id,
+            mensagem=f"Falha na consulta via conta temporária: {exc}",
+            atualizacao_solicitada=True,
+        )
+    finally:
+        if account_id:
+            avisos = limpar_conta_simulador(sf, account_id, cpf_bruto)
+            if resultado and avisos:
+                resumo = "; ".join(avisos[:2])
+                if len(avisos) > 2:
+                    resumo += f" (+{len(avisos) - 2} avisos)"
+                resultado.mensagem = f"{resultado.mensagem} Limpeza parcial: {resumo}".strip()
+
+    return resultado or ResultadoRanking(
+        ok=False,
+        cpf=cpf_digitos,
+        mensagem="Falha inesperada na consulta via conta temporária.",
+    )
+
+
 def _montar_resultado(conta: Dict[str, Any], cpf_digitos: str, **extra) -> ResultadoRanking:
     ranking = conta.get("Ranking__c")
     mensagem = extra.pop("mensagem", None)
@@ -357,7 +663,7 @@ def consultar_ranking(
     timeout_seg: float = 90.0,
     intervalo_seg: float = 5.0,
 ) -> ResultadoRanking:
-    _ = regional_comercial  # reservado; regional vem dos campos da Account na org
+    regional = regional_comercial or regional_comercial_padrao()
     cpf_digitos = normalizar_cpf(cpf_bruto)
     if len(cpf_digitos) != 11:
         return ResultadoRanking(ok=False, cpf=cpf_digitos, mensagem="Informe um CPF válido com 11 dígitos.")
@@ -367,13 +673,12 @@ def consultar_ranking(
 
     if forcar_atualizacao:
         if not conta:
-            return ResultadoRanking(
-                ok=False,
-                cpf=cpf_digitos,
-                mensagem=(
-                    "Não há conta cadastrada com este CPF no Salesforce. "
-                    "A IntegracaoRisk3 exige uma Account existente."
-                ),
+            return consultar_ranking_via_conta_temporaria(
+                sf,
+                cpf_bruto,
+                regional_comercial=regional,
+                timeout_seg=timeout_seg,
+                intervalo_seg=intervalo_seg,
             )
 
         disparou, msg_r3, tentativas = disparar_integracao_risk3(sf, conta["Id"], opp_id, bypass=True)
@@ -444,11 +749,12 @@ def consultar_ranking(
         )
 
     if not conta and not conta_rest:
-        return ResultadoRanking(
-            ok=False,
-            cpf=cpf_digitos,
-            mensagem="Nenhuma conta encontrada para o CPF informado.",
-            tentativas_disparo=tent_rest,
+        return consultar_ranking_via_conta_temporaria(
+            sf,
+            cpf_bruto,
+            regional_comercial=regional,
+            timeout_seg=timeout_seg,
+            intervalo_seg=intervalo_seg,
         )
 
     if conta_rest and not ranking_rest:
