@@ -1,13 +1,23 @@
 # -*- coding: utf-8 -*-
 """
 Consulta de Ranking do Cliente — Direcional
-Consulta por CPF no Salesforce.
+Layout alinhado ao velocimetro.py (Ficha Direcional).
 
 Fluxo: SOQL na Account; se não houver conta, cria DIRESIMULATOR temporária,
 consulta Risk3, exibe o ranking e remove a conta ao final.
+
+Logos esperadas na raiz do repositório (mesmos nomes do velocímetro):
+  - 502.57_LOGO DIRECIONAL_V2F-01.png
+  - 502.57_LOGO D_COR_V3F.png
+  - fundo_cadastrorh.jpg (opcional)
 """
 
+from __future__ import annotations
+
+import base64
+import html
 import os
+from pathlib import Path
 
 import streamlit as st
 from tqdm import tqdm
@@ -15,15 +25,31 @@ from tqdm import tqdm
 from ranking_cliente import consultar_ranking, normalizar_cpf, regional_comercial_padrao
 from salesforce_api import conectar_salesforce
 
+_DIR_APP = Path(__file__).resolve().parent
+LOGO_TOPO_ARQUIVO = "502.57_LOGO DIRECIONAL_V2F-01.png"
+FAVICON_ARQUIVO = "502.57_LOGO D_COR_V3F.png"
+FUNDO_CADASTRO_ARQUIVO = "fundo_cadastrorh.jpg"
 
-COR_AZUL_ESC = "#002c5d"
-COR_VERMELHO = "#e30613"
-COR_FUNDO = "#fcfdfe"
+COR_AZUL_ESC = "#04428f"
+COR_VERMELHO = "#cb0935"
+COR_VERMELHO_ESCURO = "#9e0828"
 COR_BORDA = "#eef2f6"
+COR_TEXTO_PRETO = "#000000"
 COR_TEXTO_MUTED = "#64748b"
 COR_INPUT_BG = "#f0f2f6"
 TIMEOUT_CONSULTA_SEG = 90.0
 INTERVALO_POLL_SEG = 5.0
+
+
+def _hex_rgb_triplet(hex_color: str) -> str:
+    x = (hex_color or "").strip().lstrip("#")
+    if len(x) != 6:
+        return "0, 0, 0"
+    return f"{int(x[0:2], 16)}, {int(x[2:4], 16)}, {int(x[4:6], 16)}"
+
+
+RGB_AZUL_CSS = _hex_rgb_triplet(COR_AZUL_ESC)
+RGB_VERMELHO_CSS = _hex_rgb_triplet(COR_VERMELHO)
 
 
 class TqdmDirecional:
@@ -75,153 +101,266 @@ def total_passos_consulta(forcar_atualizacao: bool) -> int:
     return poll_passos + overhead
 
 
+def _resolver_png_raiz(nome: str) -> Path | None:
+    for base in (_DIR_APP, _DIR_APP.parent):
+        p = base / nome
+        if p.is_file():
+            return p
+    return None
+
+
+def _resolver_imagem_fundo_local(nome: str) -> Path | None:
+    for base in (_DIR_APP, _DIR_APP.parent):
+        for ext in (".jpg", ".jpeg", ".JPG", ".JPEG", ".png", ".PNG"):
+            stem = Path(nome).stem
+            p = base / f"{stem}{ext}"
+            if p.is_file():
+                return p
+        p = base / nome
+        if p.is_file():
+            return p
+    return None
+
+
+def _css_url_fundo_cadastro() -> str:
+    p = _resolver_imagem_fundo_local(FUNDO_CADASTRO_ARQUIVO)
+    if p and p.is_file():
+        try:
+            raw = p.read_bytes()
+            suf = p.suffix.lower()
+            mime = "image/jpeg" if suf in (".jpg", ".jpeg") else "image/png"
+            b64 = base64.b64encode(raw).decode("ascii")
+            return f"data:{mime};base64,{b64}"
+        except OSError:
+            pass
+    return (
+        "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab"
+        "?auto=format&fit=crop&w=1920&q=80"
+    )
+
+
+def _logo_arquivo_local() -> str | None:
+    p_topo = _resolver_png_raiz(LOGO_TOPO_ARQUIVO)
+    if p_topo:
+        return str(p_topo)
+    for name in ("logo_direcional.png", "logo_direcional.jpg", "logo_direcional.jpeg", "logo.png"):
+        p = _DIR_APP / "assets" / name
+        if p.is_file():
+            return str(p)
+    return None
+
+
+def _logo_url_secrets() -> str | None:
+    try:
+        if hasattr(st, "secrets"):
+            b = st.secrets.get("branding")
+            if isinstance(b, dict):
+                u = (b.get("LOGO_URL") or "").strip()
+                if u:
+                    return u
+    except Exception:
+        pass
+    return None
+
+
+def _exibir_logo_topo() -> None:
+    path = _logo_arquivo_local()
+    url = _logo_url_secrets()
+    try:
+        if path:
+            ext = Path(path).suffix.lower().lstrip(".")
+            mime = "image/png" if ext == "png" else "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
+            with open(path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("ascii")
+            st.markdown(
+                f'<div class="ficha-logo-wrap"><img src="data:{mime};base64,{b64}" alt="Direcional" /></div>',
+                unsafe_allow_html=True,
+            )
+            return
+        if url:
+            st.markdown(
+                f'<div class="ficha-logo-wrap"><img src="{html.escape(url)}" alt="Direcional" /></div>',
+                unsafe_allow_html=True,
+            )
+    except Exception:
+        pass
+
+
+def _cabecalho_pagina() -> None:
+    _exibir_logo_topo()
+    st.markdown(
+        f'<div class="ficha-hero-stack">'
+        f'<div class="ficha-hero">'
+        f'<p class="ficha-title">Consulta de Ranking</p>'
+        f"</div>"
+        f'<div class="ficha-hero-bar-wrap" aria-hidden="true">'
+        f'<div class="ficha-hero-bar"></div>'
+        f"</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def aplicar_estilo() -> None:
+    bg_url = _css_url_fundo_cadastro()
     st.markdown(
         f"""
         <style>
-        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800;900&family=Inter:wght@300;400;500;600;700&display=swap');
-
-        html, body, [data-testid="stAppViewContainer"] {{
+        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800;900&family=Inter:wght@400;500;600;700&display=swap');
+        @keyframes fichaFadeIn {{
+            from {{ opacity: 0; transform: translateY(18px); }}
+            to {{ opacity: 1; transform: translateY(0); }}
+        }}
+        @keyframes fichaShimmer {{
+            0% {{ background-position: 0% 50%; }}
+            100% {{ background-position: 200% 50%; }}
+        }}
+        html, body, :root, [data-testid="stApp"] {{
+            color-scheme: light !important;
+        }}
+        html, body {{
             font-family: 'Inter', sans-serif;
-            color: {COR_AZUL_ESC};
-            background-color: {COR_FUNDO};
+            color: {COR_TEXTO_PRETO};
+            background: transparent !important;
         }}
-
-        h1, h2, h3, h4 {{
-            font-family: 'Montserrat', sans-serif !important;
-            color: {COR_AZUL_ESC} !important;
-            font-weight: 800;
+        .stApp,
+        [data-testid="stApp"] {{
+            background:
+                linear-gradient(135deg, rgba({RGB_AZUL_CSS}, 0.82) 0%, rgba(30, 58, 95, 0.55) 38%, rgba({RGB_VERMELHO_CSS}, 0.22) 72%, rgba(15, 23, 42, 0.45) 100%),
+                url("{bg_url}") center / cover no-repeat !important;
+            background-attachment: scroll !important;
+        }}
+        [data-testid="stAppViewContainer"] {{
+            background: transparent !important;
+        }}
+        header[data-testid="stHeader"],
+        [data-testid="stHeader"] {{
+            background: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+        }}
+        [data-testid="stDecoration"] {{ display: none !important; }}
+        [data-testid="stSidebar"] {{ display: none !important; }}
+        [data-testid="stSidebarCollapsedControl"] {{ display: none !important; }}
+        [data-testid="stMain"] {{
+            padding-left: clamp(14px, 5vw, 56px) !important;
+            padding-right: clamp(14px, 5vw, 56px) !important;
+            padding-top: clamp(12px, 3.5vh, 40px) !important;
+            padding-bottom: clamp(14px, 4vh, 44px) !important;
+        }}
+        .block-container {{
+            max-width: 720px !important;
+            margin-left: auto !important;
+            margin-right: auto !important;
+            padding: 1.45rem 2rem 1.55rem 2rem !important;
+            background: rgba(255, 255, 255, 0.78) !important;
+            backdrop-filter: blur(18px) saturate(1.15);
+            -webkit-backdrop-filter: blur(18px) saturate(1.15);
+            border-radius: 24px !important;
+            border: 1px solid rgba(255, 255, 255, 0.45) !important;
+            box-shadow:
+                0 4px 6px -1px rgba({RGB_AZUL_CSS}, 0.06),
+                0 24px 48px -12px rgba({RGB_AZUL_CSS}, 0.18),
+                inset 0 1px 0 rgba(255, 255, 255, 0.55) !important;
+            animation: fichaFadeIn 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+        }}
+        .ficha-logo-wrap {{
             text-align: center;
+            padding: 0.1rem 0 0.45rem 0;
         }}
-
-        .block-container {{ max-width: 1200px !important; padding: 2rem !important; }}
-
+        .ficha-logo-wrap img {{
+            max-height: 72px;
+            width: auto;
+            max-width: min(280px, 85vw);
+            object-fit: contain;
+            display: inline-block;
+        }}
+        .ficha-hero-stack {{
+            width: 100%;
+            margin-bottom: 0.35rem;
+        }}
+        .ficha-hero {{
+            text-align: center;
+            padding: 0.5rem 0 0 0;
+            margin: 0 auto;
+            max-width: 640px;
+            animation: fichaFadeIn 0.85s cubic-bezier(0.22, 1, 0.36, 1) 0.1s both;
+        }}
+        .ficha-hero .ficha-title {{
+            font-family: 'Montserrat', sans-serif;
+            font-size: clamp(1.35rem, 3.5vw, 1.75rem);
+            font-weight: 900;
+            color: {COR_AZUL_ESC};
+            margin: 0;
+            line-height: 1.25;
+            letter-spacing: -0.02em;
+        }}
+        .ficha-hero-bar-wrap {{
+            width: 100%;
+            margin: clamp(0.85rem, 2.4vw, 1.2rem) 0 1.25rem;
+        }}
+        .ficha-hero-bar {{
+            height: 4px;
+            width: 100%;
+            border-radius: 999px;
+            background: linear-gradient(90deg, {COR_AZUL_ESC}, {COR_VERMELHO}, {COR_AZUL_ESC});
+            background-size: 200% 100%;
+            animation: fichaShimmer 4s ease-in-out infinite alternate;
+        }}
         div[data-baseweb="input"] {{
-            border-radius: 8px !important;
+            border-radius: 10px !important;
             border: 1px solid #e2e8f0 !important;
             background-color: {COR_INPUT_BG} !important;
         }}
-
-        .row-widget.stButton,
-        div[data-testid="column"]:has(.stButton),
-        div[data-testid="stVerticalBlock"] > div:has(.stButton),
-        .stButton {{
-            width: 100% !important;
-            max-width: 100% !important;
-        }}
-
-        .stButton {{
-            display: block !important;
-        }}
-
         .stButton button {{
             font-family: 'Inter', sans-serif;
-            border-radius: 8px !important;
-            padding: 0 20px !important;
-            box-sizing: border-box !important;
+            border-radius: 10px !important;
             width: 100% !important;
-            max-width: 100% !important;
-            height: 38px !important;
-            min-height: 38px !important;
+            height: 42px !important;
             font-weight: 700 !important;
             text-transform: uppercase;
             letter-spacing: 0.05em;
         }}
-
         .stButton button[kind="primary"] {{
             background: {COR_VERMELHO} !important;
             color: #ffffff !important;
             border: none !important;
         }}
-
         .stButton button[kind="primary"]:hover {{
-            background: #c40510 !important;
+            background: {COR_VERMELHO_ESCURO} !important;
         }}
-
-        .header-container {{
+        .ranking-kpi {{
+            background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,251,252,0.9) 100%);
+            border: 1px solid rgba(226, 232, 240, 0.9);
+            border-radius: 14px;
+            padding: 22px 16px;
             text-align: center;
-            padding: 40px 0;
-            background: #ffffff;
-            margin-bottom: 40px;
-            border-radius: 0 0 24px 24px;
-            border-bottom: 1px solid {COR_BORDA};
-            box-shadow: 0 10px 25px -15px rgba(0,44,93,0.15);
+            box-shadow: 0 2px 8px rgba({RGB_AZUL_CSS}, 0.06);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            margin-top: 0.5rem;
         }}
-
-        .header-title {{
-            font-family: 'Montserrat', sans-serif;
-            color: {COR_AZUL_ESC};
-            font-size: 2rem;
-            font-weight: 900;
-            margin: 0;
-            text-transform: uppercase;
-            letter-spacing: 0.15em;
-        }}
-
-        .header-subtitle {{
-            color: {COR_AZUL_ESC};
-            font-size: 0.95rem;
-            font-weight: 600;
-            margin-top: 10px;
-            opacity: 0.85;
-        }}
-
-        .card {{
-            background: #ffffff;
-            padding: 24px;
-            border-radius: 16px;
-            border: 1px solid {COR_BORDA};
-            margin-bottom: 24px;
-        }}
-
-        .footer {{
-            text-align: center;
-            padding: 40px 0;
-            color: {COR_AZUL_ESC};
-            font-size: 0.8rem;
-            opacity: 0.7;
-        }}
-
-        .hover-card {{
-            background-color: #ffffff;
-            border-radius: 12px;
-            padding: 18px 16px;
-            border: 1px solid #eef2f6;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
-            transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease;
-            height: 130px;
-            width: 100%;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-        }}
-        .hover-card:hover {{
+        .ranking-kpi:hover {{
             transform: translateY(-4px);
-            box-shadow: 0 10px 20px rgba(0, 44, 93, 0.15);
-            border-color: {COR_VERMELHO};
+            box-shadow: 0 10px 20px -5px rgba({RGB_AZUL_CSS}, 0.15);
         }}
-        .hover-card-label {{
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            letter-spacing: 0.12em;
-            color: {COR_TEXTO_MUTED};
-            margin-bottom: 4px;
+        .ranking-kpi .lbl {{
+            font-size: 0.72rem;
             font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: {COR_TEXTO_MUTED};
         }}
-        .hover-card-value {{
-            font-size: 1.05rem;
+        .ranking-kpi .val {{
+            font-family: 'Montserrat', sans-serif;
+            font-size: 1.35rem;
             font-weight: 800;
-            color: {COR_VERMELHO};
+            color: {COR_VERMELHO} !important;
+            margin-top: 8px;
             word-break: break-word;
-            text-align: center;
         }}
-
         .direcional-tqdm {{
             margin: 1rem 0 1.25rem;
-            padding: 0.25rem 0;
         }}
-
         .direcional-tqdm-header {{
             display: flex;
             justify-content: space-between;
@@ -231,12 +370,10 @@ def aplicar_estilo() -> None:
             font-weight: 600;
             color: {COR_AZUL_ESC};
         }}
-
         .direcional-tqdm-pct {{
             color: {COR_VERMELHO};
             font-weight: 800;
         }}
-
         .direcional-tqdm-track {{
             width: 100%;
             height: 12px;
@@ -245,13 +382,11 @@ def aplicar_estilo() -> None:
             overflow: hidden;
             border: 1px solid #dbe4ee;
         }}
-
         .direcional-tqdm-fill {{
             height: 100%;
             border-radius: 999px;
             background: linear-gradient(90deg, {COR_AZUL_ESC} 0%, {COR_VERMELHO} 100%);
             transition: width 0.35s ease;
-            box-shadow: 0 1px 4px rgba(227, 6, 19, 0.25);
         }}
         </style>
         """,
@@ -259,35 +394,27 @@ def aplicar_estilo() -> None:
     )
 
 
-def main():
+def _resolver_favicon() -> str | None:
+    fav = _resolver_png_raiz(FAVICON_ARQUIVO)
+    if fav:
+        return str(fav)
+    fallback = _DIR_APP / "favicon.png"
+    return str(fallback) if fallback.is_file() else None
+
+
+def main() -> None:
     st.set_page_config(
-        page_title="Consulta de Ranking — Direcional",
-        page_icon="favicon.png",
-        layout="centered",
+        page_title="Consulta de Ranking | Direcional",
+        page_icon=_resolver_favicon(),
+        layout="wide",
     )
     aplicar_estilo()
-
-    st.markdown(
-        '<div class="header-container">'
-        '<div class="header-title">Consulta de Ranking</div>'
-        '<div class="header-subtitle">Informe o CPF — consulta SOQL; sem conta, cria temporária e consulta Risk3</div>'
-        '</div>',
-        unsafe_allow_html=True,
-    )
+    _cabecalho_pagina()
 
     if "sf" not in st.session_state:
         st.session_state.sf = None
     if "ultimo_resultado" not in st.session_state:
         st.session_state.ultimo_resultado = None
-
-    st.markdown(
-        f"""
-<p style="text-align:center; margin-bottom:0.75rem; font-size:0.95rem; color:{COR_AZUL_ESC};">
-Digite o <b>CPF do cliente</b> (com ou sem formatação) para consultar o ranking.
-</p>
-        """,
-        unsafe_allow_html=True,
-    )
 
     cpf_entrada = st.text_input("CPF do cliente", value="", placeholder="Ex.: 000.000.000-00")
     forcar_atualizacao = st.checkbox(
@@ -351,13 +478,14 @@ Digite o <b>CPF do cliente</b> (com ou sem formatação) para consultar o rankin
                     finally:
                         barra.finish()
                         barra.close()
+
                     if not resultado.ok and not resultado.ranking:
                         st.markdown(
                             f"""
-<div style="margin-top:16px; padding:12px 16px; border-radius:8px;
+<div style="margin-top:16px; padding:12px 16px; border-radius:10px;
             border:1px solid {COR_VERMELHO}; background:#fff5f5;
             color:{COR_VERMELHO}; font-weight:600; text-align:center;">
-{resultado.mensagem}
+{html.escape(resultado.mensagem or "Consulta sem resultado.")}
 </div>
                             """,
                             unsafe_allow_html=True,
@@ -372,22 +500,19 @@ Digite o <b>CPF do cliente</b> (com ou sem formatação) para consultar o rankin
                         elif forcar_atualizacao and not resultado.ranking:
                             st.info(resultado.mensagem)
 
-    # Exibição dos dados logo abaixo do botão, dentro do mesmo card
     dados = st.session_state.ultimo_resultado
     if dados:
+        ranking_txt = html.escape(str(dados.get("ranking_conta") or "—"))
         st.markdown(
             f"""
-<div class="hover-card">
-  <div class="hover-card-label">Ranking do Cliente</div>
-  <div class="hover-card-value">{dados.get('ranking_conta') or '—'}</div>
+<div class="ranking-kpi">
+  <div class="lbl">Ranking do Cliente</div>
+  <div class="val">{ranking_txt}</div>
 </div>
             """,
             unsafe_allow_html=True,
         )
 
-    st.markdown('<div class="footer">Direcional Engenharia</div>', unsafe_allow_html=True)
-
 
 if __name__ == "__main__":
     main()
-
