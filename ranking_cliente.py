@@ -2,8 +2,9 @@
 """
 Consulta e atualização de ranking de cliente no Salesforce (Account.Ranking__c).
 
-Leitura via SOQL. Nova consulta via endpoint Apex REST ConsultorRankingRisk3REST,
-que delega para IntegracaoRisk3.consultarStatusCPFCNPJ (API Risk3).
+Leitura via Apex REST UpdateRankingRest (GET /update-ranking?cpf=...).
+Nova consulta via ConsultorRankingRisk3REST + IntegracaoRisk3 (Risk3).
+Fallback de leitura: SOQL direto na Account.
 """
 from __future__ import annotations
 
@@ -13,7 +14,8 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-APEX_REST_RANKING = "apexrest/consulta-ranking/v1"
+APEX_REST_UPDATE_RANKING = "update-ranking"
+APEX_REST_RANKING = "consulta-ranking/v1"
 QA_ACCOUNT = "sobjects/Account/quickActions/Consultar_Status_CPF"
 QA_OPPORTUNITY = "sobjects/Opportunity/quickActions/Consultar_Status_CPFOP"
 
@@ -67,6 +69,102 @@ class ResultadoRanking:
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+def _parse_resposta_update_ranking(texto: str) -> Tuple[Optional[str], Optional[str]]:
+    resposta = (texto or "").strip()
+    if resposta.startswith("Ranking:"):
+        ranking = resposta[len("Ranking:") :].strip()
+        if ranking.lower() in ("", "null", "none"):
+            return None, None
+        return ranking, None
+    if resposta == "Conta não encontrada.":
+        return None, "Nenhuma conta encontrada para o CPF informado."
+    if resposta:
+        return None, resposta
+    return None, "Resposta vazia do endpoint UpdateRankingRest."
+
+
+def _url_apex_rest(sf, resource: str) -> str:
+    base = (getattr(sf, "base_url", "") or "").split("/services/data")[0].rstrip("/")
+    if not base and hasattr(sf, "sf_instance"):
+        base = f"https://{sf.sf_instance}"
+    recurso = resource.lstrip("/")
+    if recurso.startswith("apexrest/"):
+        recurso = recurso[len("apexrest/") :]
+    return f"{base}/services/apexrest/{recurso}"
+
+
+def buscar_ranking_via_rest(
+    sf,
+    cpf_bruto: str,
+) -> Tuple[Optional[str], Optional[str], List[str]]:
+    """
+    GET UpdateRankingRest — endpoint já implantado na org Direcional.
+    Retorna (ranking, erro, tentativas).
+    """
+    cpf_digitos = normalizar_cpf(cpf_bruto)
+    if len(cpf_digitos) != 11:
+        return None, "Informe um CPF válido com 11 dígitos.", []
+
+    tentativas: List[str] = []
+    candidatos = (cpf_mascarado(cpf_digitos), cpf_digitos)
+    ultimo_erro: Optional[str] = None
+
+    for cpf_param in candidatos:
+        tentativas.append(f"GET /services/apexrest/{APEX_REST_UPDATE_RANKING}?cpf={cpf_param}")
+        try:
+            url = _url_apex_rest(sf, APEX_REST_UPDATE_RANKING)
+            resp = sf.session.get(
+                url,
+                params={"cpf": cpf_param},
+                headers={"Authorization": f"Bearer {sf.session_id}"},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            ranking, erro = _parse_resposta_update_ranking(resp.text)
+            if ranking:
+                return ranking, None, tentativas
+            if erro and "não encontrada" not in erro.lower():
+                return None, erro, tentativas
+            ultimo_erro = erro
+        except Exception as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status == 403:
+                return None, None, tentativas
+            texto = str(exc)
+            if "403" in texto:
+                return None, None, tentativas
+            if "404" in texto or "NOT_FOUND" in texto:
+                return None, None, tentativas
+            return None, texto, tentativas
+
+    return None, ultimo_erro or "Nenhuma conta encontrada para o CPF informado.", tentativas
+
+
+def aguardar_ranking_via_rest(
+    sf,
+    cpf_bruto: str,
+    *,
+    timeout_seg: float = 90.0,
+    intervalo_seg: float = 5.0,
+    ranking_anterior: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    fim = time.monotonic() + timeout_seg
+    ultimo_ranking: Optional[str] = None
+    ultimo_erro: Optional[str] = None
+
+    while time.monotonic() < fim:
+        ranking, erro, _ = buscar_ranking_via_rest(sf, cpf_bruto)
+        ultimo_ranking = ranking
+        ultimo_erro = erro
+        if ranking and ranking != ranking_anterior:
+            return ranking, None
+        if ranking and not ranking_anterior:
+            return ranking, None
+        time.sleep(intervalo_seg)
+
+    return ultimo_ranking, ultimo_erro
 
 
 def buscar_conta_por_cpf(sf, cpf_bruto: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -155,10 +253,21 @@ def consultar_ranking_risk3(
     cpf_digitos = normalizar_cpf(cpf_bruto)
     regional = (regional_comercial or regional_comercial_padrao()).strip().upper()
     payload = {"cpf": cpf_digitos, "regionalComercial": regional}
-    tentativa = f"POST {APEX_REST_RANKING} {payload}"
+    tentativa = f"POST /services/apexrest/{APEX_REST_RANKING} {payload}"
 
     try:
-        resposta = sf.restful(APEX_REST_RANKING, method="POST", json=payload)
+        url = _url_apex_rest(sf, APEX_REST_RANKING)
+        resp = sf.session.post(
+            url,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {sf.session_id}",
+                "Content-Type": "application/json",
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        resposta = resp.json()
         ranking = resposta.get("ranking")
         mensagem = resposta.get("mensagem") or resposta.get("resultadoIntegracao") or ""
         ok = bool(resposta.get("ok")) or bool(ranking)
@@ -338,6 +447,24 @@ def consultar_ranking(
                 disparada=True,
             )
 
+        ranking_poll, err_poll = aguardar_ranking_via_rest(
+            sf,
+            cpf_bruto,
+            timeout_seg=timeout_seg,
+            intervalo_seg=intervalo_seg,
+            ranking_anterior=conta.get("Ranking__c") if conta else None,
+        )
+        if ranking_poll:
+            return _resultado_de_ranking_direto(
+                cpf_digitos,
+                ranking_poll,
+                "Ranking atualizado após consulta Risk3.",
+                conta.get("Id") if conta else acc_r3,
+                atualizacao_solicitada=True,
+                tentativas=tentativas,
+                disparada=True,
+            )
+
         if ERRO_APEX_NAO_IMPLANTADO not in msg_r3 and conta:
             disparou, err, tentativas_qa = disparar_consulta_ranking(sf, conta["Id"], opp_id)
             tentativas.extend(tentativas_qa)
@@ -400,7 +527,28 @@ def consultar_ranking(
             tentativas_disparo=tentativas,
         )
 
+    ranking_rest, err_rest, tentativas_rest = buscar_ranking_via_rest(sf, cpf_bruto)
+    if ranking_rest:
+        conta_ref, _ = buscar_conta_por_cpf(sf, cpf_bruto)
+        opp = buscar_oportunidade_recente(sf, conta_ref["Id"]) if conta_ref else None
+        return ResultadoRanking(
+            ok=True,
+            cpf=cpf_digitos,
+            account_id=conta_ref.get("Id") if conta_ref else None,
+            ranking=ranking_rest,
+            opportunity_id=opp,
+            mensagem="Ranking encontrado.",
+            tentativas_disparo=tentativas_rest,
+        )
+
+    if err_rest and "não encontrada" in err_rest.lower():
+        return ResultadoRanking(ok=False, cpf=cpf_digitos, mensagem=err_rest)
+
     if erro or not conta:
-        return ResultadoRanking(ok=False, cpf=cpf_digitos, mensagem=erro or "Conta não encontrada.")
+        return ResultadoRanking(
+            ok=False,
+            cpf=cpf_digitos,
+            mensagem=err_rest or erro or "Conta não encontrada.",
+        )
 
     return _montar_resultado(conta, cpf_digitos, opportunity_id=opp_id)

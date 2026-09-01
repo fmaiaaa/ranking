@@ -250,7 +250,7 @@ Digite o <b>CPF do cliente</b> (com ou sem formatação) para consultar o rankin
                             forcar_atualizacao=forcar_atualizacao,
                             regional_comercial=regional,
                         )
-                    if not resultado.account_id and not resultado.ok:
+                    if not resultado.ok and not resultado.ranking:
                         st.markdown(
                             f"""
 <div style="margin-top:16px; padding:12px 16px; border-radius:8px;
