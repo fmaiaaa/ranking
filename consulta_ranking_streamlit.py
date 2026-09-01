@@ -5,10 +5,10 @@ Consulta por CPF no Salesforce. Design: Direcional.
 """
 
 import os
-import re
 
 import streamlit as st
 
+from ranking_cliente import consultar_ranking, formatar_score, normalizar_cpf
 from salesforce_api import conectar_salesforce
 
 
@@ -167,57 +167,6 @@ def aplicar_estilo() -> None:
     )
 
 
-def normalizar_cpf(valor: str) -> str:
-    """
-    Normaliza CPF digitado pelo usuário removendo tudo que não é número.
-    """
-    if not valor:
-        return ""
-    return re.sub(r"\D+", "", str(valor))
-
-
-def consultar_por_cpf(sf, cpf_bruto: str):
-    """
-    Consulta no Salesforce pelo CPF da conta (Account.CPF__c)
-    e retorna o registro mais recente com o ranking do cliente.
-    """
-    # Normaliza para dígitos e mascara de volta no padrão XXX.XXX.XXX-XX,
-    # pois Account.CPF__c está armazenado com máscara (ex.: 076.086.171-44).
-    cpf_digitos = normalizar_cpf(cpf_bruto)
-    if not cpf_digitos or len(cpf_digitos) != 11:
-        return None, "Informe um CPF válido com 11 dígitos."
-
-    cpf_mascarado = f"{cpf_digitos[0:3]}.{cpf_digitos[3:6]}.{cpf_digitos[6:9]}-{cpf_digitos[9:11]}"
-
-    soql = f"""
-        SELECT
-            Id,
-            Name,
-            IDOportunidade__c,
-            AccountId,
-            Account.Name,
-            Account.CPF__c,
-            Account.Ranking__c,
-            Account.Ranking_Score__c,
-            Ranking__c,
-            Ranking_Score__c
-        FROM Opportunity
-        WHERE Account.CPF__c = '{cpf_mascarado}'
-        ORDER BY CreatedDate DESC
-        LIMIT 10
-    """
-
-    try:
-        res = sf.query(soql)
-        registros = res.get("records", [])
-        if not registros:
-            return None, "Nenhum registro encontrado para o CPF informado."
-        opp = registros[0]
-        return opp, None
-    except Exception as e:
-        return None, f"Erro ao consultar o Salesforce: {e}"
-
-
 def main():
     st.set_page_config(
         page_title="Consulta de Ranking — Direcional",
@@ -249,6 +198,14 @@ Digite o <b>CPF do cliente</b> (com ou sem formatação) para consultar o rankin
     )
 
     cpf_entrada = st.text_input("CPF do cliente", value="", placeholder="Ex.: 000.000.000-00")
+    forcar_atualizacao = st.checkbox(
+        "Atualizar ranking (nova consulta Serasa)",
+        value=False,
+        help=(
+            "Tenta disparar automaticamente a ação Consultar Status CPF no Salesforce "
+            "e aguarda até 90 segundos pela atualização."
+        ),
+    )
 
     if st.button("Consultar", type="primary", use_container_width=True, key="btn_consultar"):
         texto = cpf_entrada.strip()
@@ -276,35 +233,61 @@ Digite o <b>CPF do cliente</b> (com ou sem formatação) para consultar o rankin
                         st.session_state.sf = sf
 
                 if st.session_state.sf is not None:
-                    with st.spinner("Consultando..."):
-                        opp, erro = consultar_por_cpf(st.session_state.sf, texto)
-                    if erro:
+                    msg_spinner = (
+                        "Consultando e aguardando atualização do ranking..."
+                        if forcar_atualizacao
+                        else "Consultando ranking..."
+                    )
+                    with st.spinner(msg_spinner):
+                        resultado = consultar_ranking(
+                            st.session_state.sf,
+                            texto,
+                            forcar_atualizacao=forcar_atualizacao,
+                        )
+                    if not resultado.account_id and not resultado.ok:
                         st.markdown(
                             f"""
 <div style="margin-top:16px; padding:12px 16px; border-radius:8px;
             border:1px solid {COR_VERMELHO}; background:#fff5f5;
             color:{COR_VERMELHO}; font-weight:600; text-align:center;">
-{erro}
+{resultado.mensagem}
 </div>
                             """,
                             unsafe_allow_html=True,
                         )
                         st.session_state.ultimo_resultado = None
                     else:
-                        conta = opp.get("Account") or {}
-                        dados_prontos = {
-                            "ranking_conta": conta.get("Ranking__c"),
+                        st.session_state.ultimo_resultado = {
+                            "ranking_conta": resultado.ranking,
+                            "ranking_score": resultado.ranking_score,
+                            "account_name": resultado.account_name,
+                            "ultima_consulta": resultado.ultima_consulta_cpf,
+                            "mensagem": resultado.mensagem,
+                            "atualizacao_erro": resultado.atualizacao_erro,
                         }
-                        st.session_state.ultimo_resultado = dados_prontos
+                        if resultado.atualizacao_erro:
+                            st.warning(resultado.atualizacao_erro)
+                        elif forcar_atualizacao and not resultado.ranking:
+                            st.info(resultado.mensagem)
 
     # Exibição dos dados logo abaixo do botão, dentro do mesmo card
     dados = st.session_state.ultimo_resultado
     if dados:
+        score = dados.get("ranking_score")
+        score_txt = formatar_score(score)
         st.markdown(
             f"""
-<div class="hover-card">
-  <div class="hover-card-label">Ranking do Cliente</div>
+<div class="hover-card" style="height:auto; min-height:130px; padding-bottom:22px;">
+  <div class="hover-card-label">Cliente</div>
+  <div class="hover-card-value" style="font-size:0.95rem; color:{COR_AZUL_ESC};">
+    {dados.get('account_name') or '—'}
+  </div>
+  <div class="hover-card-label" style="margin-top:12px;">Ranking do Cliente</div>
   <div class="hover-card-value">{dados.get('ranking_conta') or '—'}</div>
+  <div class="hover-card-label" style="margin-top:8px;">Score · Última consulta</div>
+  <div class="hover-card-value" style="font-size:0.9rem;">
+    {score_txt} · {dados.get('ultima_consulta') or '—'}
+  </div>
 </div>
             """,
             unsafe_allow_html=True,
@@ -315,3 +298,4 @@ Digite o <b>CPF do cliente</b> (com ou sem formatação) para consultar o rankin
 
 if __name__ == "__main__":
     main()
+
