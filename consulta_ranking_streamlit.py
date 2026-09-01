@@ -228,22 +228,55 @@ def aplicar_estilo() -> None:
             to {{ transform: rotate(360deg); }}
         }}
         html, body, :root, [data-testid="stApp"] {{
-            color-scheme: light !important;
+            color-scheme: light only !important;
+        }}
+        .stApp[data-theme="dark"],
+        .stApp[data-theme="light"] {{
+            color-scheme: light only !important;
         }}
         html, body {{
             font-family: 'Inter', sans-serif;
-            color: {COR_TEXTO_PRETO};
-            background: transparent !important;
+            color: {COR_TEXTO_PRETO} !important;
+            background: #fcfdfe !important;
+            overflow-x: hidden !important;
+            max-width: 100vw !important;
         }}
         .stApp,
-        [data-testid="stApp"] {{
+        [data-testid="stApp"],
+        .stApp[data-theme="dark"] {{
+            color-scheme: light only !important;
             background:
                 linear-gradient(135deg, rgba({RGB_AZUL_CSS}, 0.82) 0%, rgba(30, 58, 95, 0.55) 38%, rgba({RGB_VERMELHO_CSS}, 0.22) 72%, rgba(15, 23, 42, 0.45) 100%),
                 url("{bg_url}") center / cover no-repeat !important;
             background-attachment: scroll !important;
+            background-color: #fcfdfe !important;
         }}
-        [data-testid="stAppViewContainer"] {{
+        [data-testid="stAppViewContainer"],
+        .stApp[data-theme="dark"] [data-testid="stAppViewContainer"] {{
             background: transparent !important;
+            color: {COR_TEXTO_PRETO} !important;
+        }}
+        .block-container,
+        .stApp[data-theme="dark"] .block-container {{
+            color: {COR_TEXTO_PRETO} !important;
+            background: rgba(255, 255, 255, 0.92) !important;
+        }}
+        [data-testid="stTextInput"] input,
+        [data-testid="stTextInput"] label,
+        [data-testid="stWidgetLabel"] p,
+        [data-testid="stMarkdownContainer"] p,
+        .stAlert,
+        [data-testid="stNotification"] {{
+            color: {COR_TEXTO_PRETO} !important;
+        }}
+        div[data-baseweb="input"],
+        .stApp[data-theme="dark"] div[data-baseweb="input"] {{
+            background-color: {COR_INPUT_BG} !important;
+            color: {COR_TEXTO_PRETO} !important;
+        }}
+        div[data-baseweb="input"] input {{
+            color: {COR_TEXTO_PRETO} !important;
+            -webkit-text-fill-color: {COR_TEXTO_PRETO} !important;
         }}
         header[data-testid="stHeader"],
         [data-testid="stHeader"] {{
@@ -468,6 +501,99 @@ def aplicar_estilo() -> None:
             border-radius: 999px;
             background: linear-gradient(90deg, {COR_AZUL_ESC} 0%, {COR_VERMELHO} 100%);
             transition: width 0.35s ease;
+        }}
+
+        @media (max-width: 768px) {{
+            [data-testid="stMain"] {{
+                padding-left: 6px !important;
+                padding-right: 6px !important;
+                padding-top: 8px !important;
+                padding-bottom: 8px !important;
+                min-height: auto !important;
+                align-items: stretch !important;
+                justify-content: flex-start !important;
+            }}
+            section.main > div {{
+                align-items: stretch !important;
+                justify-content: flex-start !important;
+            }}
+            .block-container {{
+                width: 100% !important;
+                max-width: 100% !important;
+                margin: 0 !important;
+                padding: 1.15rem 0.9rem 1rem 0.9rem !important;
+                min-height: auto !important;
+                border-radius: 6px !important;
+                box-sizing: border-box !important;
+            }}
+            .ficha-logo-wrap img {{
+                max-height: 56px;
+                max-width: 72vw;
+            }}
+            .ficha-hero .ficha-title {{
+                font-size: 1.28rem;
+                letter-spacing: 0;
+            }}
+            .ficha-hero-bar-wrap {{
+                margin: 0.85rem 0 1.15rem;
+            }}
+            .ficha-hero-bar {{
+                border-radius: 2px;
+                height: 3px;
+            }}
+            div[data-baseweb="input"] {{
+                border-radius: 6px !important;
+                min-height: 48px !important;
+            }}
+            div[data-baseweb="input"] input {{
+                font-size: 1rem !important;
+                padding-top: 12px !important;
+                padding-bottom: 12px !important;
+            }}
+            .stButton button {{
+                border-radius: 6px !important;
+                height: 48px !important;
+                min-height: 48px !important;
+                font-size: 0.92rem !important;
+            }}
+            .ranking-kpi {{
+                border-radius: 6px;
+                padding: 1.25rem 0.85rem;
+                min-height: 110px;
+            }}
+            .ranking-kpi .val {{
+                font-size: 1.35rem;
+            }}
+            .direcional-tqdm {{
+                margin: 1rem 0 1.1rem;
+            }}
+            .direcional-tqdm-header {{
+                font-size: 0.88rem;
+                gap: 0.35rem;
+            }}
+            .direcional-tqdm-desc {{
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                max-width: 62%;
+            }}
+            .direcional-tqdm-track {{
+                height: 12px;
+                border-radius: 2px;
+            }}
+            .direcional-tqdm-fill {{
+                border-radius: 2px;
+            }}
+            .page-footer {{
+                margin-top: 1.75rem;
+                font-size: 0.8rem;
+            }}
+            [data-testid="column"],
+            [data-testid="stVerticalBlock"],
+            [data-testid="stHorizontalBlock"] {{
+                width: 100% !important;
+                max-width: 100% !important;
+            }}
         }}
         </style>
         """,
