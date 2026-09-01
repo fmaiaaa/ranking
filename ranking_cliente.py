@@ -663,24 +663,30 @@ def consultar_ranking(
     timeout_seg: float = 90.0,
     intervalo_seg: float = 5.0,
 ) -> ResultadoRanking:
+    """
+    Fluxo principal:
+    1. SOQL na Account por CPF.
+    2. Se não existir conta → cria DIRESIMULATOR, consulta Risk3, devolve ranking e exclui.
+    3. Se existir conta → lê ranking (SOQL/REST) ou atualiza via Risk3 quando solicitado.
+    """
     regional = regional_comercial or regional_comercial_padrao()
     cpf_digitos = normalizar_cpf(cpf_bruto)
     if len(cpf_digitos) != 11:
         return ResultadoRanking(ok=False, cpf=cpf_digitos, mensagem="Informe um CPF válido com 11 dígitos.")
 
     conta, erro_soql = buscar_conta_por_cpf(sf, cpf_bruto)
-    opp_id = buscar_oportunidade_recente(sf, conta["Id"]) if conta else None
+    if not conta:
+        return consultar_ranking_via_conta_temporaria(
+            sf,
+            cpf_bruto,
+            regional_comercial=regional,
+            timeout_seg=timeout_seg,
+            intervalo_seg=intervalo_seg,
+        )
+
+    opp_id = buscar_oportunidade_recente(sf, conta["Id"])
 
     if forcar_atualizacao:
-        if not conta:
-            return consultar_ranking_via_conta_temporaria(
-                sf,
-                cpf_bruto,
-                regional_comercial=regional,
-                timeout_seg=timeout_seg,
-                intervalo_seg=intervalo_seg,
-            )
-
         disparou, msg_r3, tentativas = disparar_integracao_risk3(sf, conta["Id"], opp_id, bypass=True)
         ranking_anterior = conta.get("Ranking__c")
 
@@ -735,53 +741,39 @@ def consultar_ranking(
             tentativas_disparo=tentativas,
         )
 
-    ranking_rest, err_rest, conta_rest, tent_rest = buscar_ranking_via_rest(sf, cpf_bruto)
+    if conta.get("Ranking__c"):
+        return _montar_resultado(
+            conta,
+            cpf_digitos,
+            opportunity_id=opp_id,
+            mensagem="Ranking encontrado via SOQL.",
+        )
+
+    ranking_rest, err_rest, _, tent_rest = buscar_ranking_via_rest(sf, cpf_bruto)
     if ranking_rest:
-        conta_ref = conta or (buscar_conta_por_cpf(sf, cpf_bruto)[0])
         return ResultadoRanking(
             ok=True,
             cpf=cpf_digitos,
-            account_id=conta_ref.get("Id") if conta_ref else None,
+            account_id=conta.get("Id"),
             ranking=ranking_rest,
             opportunity_id=opp_id,
             mensagem="Ranking encontrado.",
             tentativas_disparo=tent_rest,
         )
 
-    if not conta and not conta_rest:
-        return consultar_ranking_via_conta_temporaria(
-            sf,
-            cpf_bruto,
-            regional_comercial=regional,
-            timeout_seg=timeout_seg,
-            intervalo_seg=intervalo_seg,
-        )
-
-    if conta_rest and not ranking_rest:
-        return ResultadoRanking(
-            ok=False,
-            cpf=cpf_digitos,
-            account_id=conta.get("Id") if conta else None,
-            ranking=None,
-            mensagem="Conta encontrada, mas sem ranking cadastrado.",
-            tentativas_disparo=tent_rest,
-        )
-
-    if err_rest and "permissão" in err_rest.lower() and conta:
-        return _montar_resultado(conta, cpf_digitos, opportunity_id=opp_id, tentativas_disparo=tent_rest)
-
-    if conta:
+    if err_rest and "permissão" in err_rest.lower():
         return _montar_resultado(
             conta,
             cpf_digitos,
             opportunity_id=opp_id,
-            mensagem=err_rest or erro_soql or "Consulta concluída.",
             tentativas_disparo=tent_rest,
         )
 
     return ResultadoRanking(
         ok=False,
         cpf=cpf_digitos,
-        mensagem=err_rest or erro_soql or "Conta não encontrada.",
+        account_id=conta.get("Id"),
+        ranking=None,
+        mensagem=err_rest or erro_soql or "Conta encontrada, mas sem ranking cadastrado.",
         tentativas_disparo=tent_rest,
     )

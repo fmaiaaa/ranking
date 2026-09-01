@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 """
 Consulta de Ranking do Cliente — Direcional
-Consulta por CPF no Salesforce. Design: Direcional.
+Consulta por CPF no Salesforce.
+
+Fluxo: SOQL na Account; se não houver conta, cria DIRESIMULATOR temporária,
+consulta Risk3, exibe o ranking e remove a conta ao final.
 """
 
 import os
@@ -178,7 +181,7 @@ def main():
     st.markdown(
         '<div class="header-container">'
         '<div class="header-title">Consulta de Ranking</div>'
-        '<div class="header-subtitle">Informe o CPF para consultar o ranking do cliente no Salesforce</div>'
+        '<div class="header-subtitle">Informe o CPF — consulta SOQL; sem conta, cria temporária e consulta Risk3</div>'
         '</div>',
         unsafe_allow_html=True,
     )
@@ -201,7 +204,10 @@ Digite o <b>CPF do cliente</b> (com ou sem formatação) para consultar o rankin
     forcar_atualizacao = st.checkbox(
         "Atualizar ranking (consulta Risk3)",
         value=False,
-        help="Dispara IntegracaoRisk3 no Salesforce e aguarda o ranking via UpdateRankingRest.",
+        help=(
+            "Com conta existente, dispara IntegracaoRisk3 e aguarda o ranking. "
+            "Sem conta, o app cria uma Account DIRESIMULATOR temporária automaticamente."
+        ),
     )
     regional = regional_comercial_padrao()
 
