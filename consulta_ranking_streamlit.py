@@ -201,10 +201,7 @@ Digite o <b>CPF do cliente</b> (com ou sem formatação) para consultar o rankin
     forcar_atualizacao = st.checkbox(
         "Atualizar ranking (consulta Risk3)",
         value=False,
-        help=(
-            "Dispara IntegracaoRisk3 via Apex REST (ConsultorRankingRisk3) "
-            "e retorna o ranking atualizado."
-        ),
+        help="Dispara IntegracaoRisk3 no Salesforce e aguarda o ranking via UpdateRankingRest.",
     )
     regional = regional_comercial_padrao()
 

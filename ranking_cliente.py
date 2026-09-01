@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-Consulta e atualização de ranking de cliente no Salesforce (Account.Ranking__c).
+Consulta e atualização de ranking no Salesforce.
 
-Leitura via Apex REST UpdateRankingRest (GET /update-ranking?cpf=...).
-Nova consulta via ConsultorRankingRisk3REST + IntegracaoRisk3 (Risk3).
-Fallback de leitura: SOQL direto na Account.
+- Leitura: Apex REST UpdateRankingRest (GET /update-ranking?cpf=...)
+- Atualização: IntegracaoRisk3 (@InvocableMethod consultarStatusCPFCNPJ)
+- Fallback de leitura: SOQL na Account
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -15,19 +16,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 APEX_REST_UPDATE_RANKING = "update-ranking"
-APEX_REST_RANKING = "consulta-ranking/v1"
-QA_ACCOUNT = "sobjects/Account/quickActions/Consultar_Status_CPF"
-QA_OPPORTUNITY = "sobjects/Opportunity/quickActions/Consultar_Status_CPFOP"
-
-ERRO_APEX_NAO_IMPLANTADO = (
-    "Endpoint Apex /services/apexrest/consulta-ranking/v1 não encontrado. "
-    "Implante as classes ConsultorRankingRisk3 e ConsultorRankingRisk3REST no Salesforce."
-)
-
-ERRO_SCREEN_FLOW_API = (
-    "Fallback de quick action indisponível (Screen Flow). "
-    "Use o endpoint Apex Risk3 após implantar as classes do repositório."
-)
+APEX_ACTION_INTEGRACAO_RISK3 = "actions/custom/apex/IntegracaoRisk3"
 
 
 def normalizar_cpf(valor: str) -> str:
@@ -51,6 +40,16 @@ def _escape_soql(valor: str) -> str:
     return str(valor).replace("\\", "\\\\").replace("'", "\\'")
 
 
+def _url_apex_rest(sf, resource: str) -> str:
+    base = (getattr(sf, "base_url", "") or "").split("/services/data")[0].rstrip("/")
+    if not base and hasattr(sf, "sf_instance"):
+        base = f"https://{sf.sf_instance}"
+    recurso = resource.lstrip("/")
+    if recurso.startswith("apexrest/"):
+        recurso = recurso[len("apexrest/") :]
+    return f"{base}/services/apexrest/{recurso}"
+
+
 @dataclass
 class ResultadoRanking:
     ok: bool
@@ -71,45 +70,45 @@ class ResultadoRanking:
         return asdict(self)
 
 
-def _parse_resposta_update_ranking(texto: str) -> Tuple[Optional[str], Optional[str]]:
+def _parse_resposta_update_ranking(texto: str) -> Tuple[Optional[str], Optional[str], bool]:
+    """
+    Retorna (ranking, erro, conta_encontrada).
+  ranking None + conta_encontrada True = conta existe sem ranking.
+    """
     resposta = (texto or "").strip()
     if resposta.startswith("Ranking:"):
         ranking = resposta[len("Ranking:") :].strip()
         if ranking.lower() in ("", "null", "none"):
-            return None, None
-        return ranking, None
+            return None, None, True
+        return ranking, None, True
     if resposta == "Conta não encontrada.":
-        return None, "Nenhuma conta encontrada para o CPF informado."
+        return None, "Nenhuma conta encontrada para o CPF informado.", False
+    if resposta == "Informe um dos parâmetros: id_risk3, cpf ou cnpj.":
+        return None, resposta, False
+    if resposta.startswith("Erro ao buscar ranking:"):
+        return None, resposta, False
     if resposta:
-        return None, resposta
-    return None, "Resposta vazia do endpoint UpdateRankingRest."
-
-
-def _url_apex_rest(sf, resource: str) -> str:
-    base = (getattr(sf, "base_url", "") or "").split("/services/data")[0].rstrip("/")
-    if not base and hasattr(sf, "sf_instance"):
-        base = f"https://{sf.sf_instance}"
-    recurso = resource.lstrip("/")
-    if recurso.startswith("apexrest/"):
-        recurso = recurso[len("apexrest/") :]
-    return f"{base}/services/apexrest/{recurso}"
+        return None, resposta, False
+    return None, "Resposta vazia do endpoint UpdateRankingRest.", False
 
 
 def buscar_ranking_via_rest(
     sf,
     cpf_bruto: str,
-) -> Tuple[Optional[str], Optional[str], List[str]]:
+) -> Tuple[Optional[str], Optional[str], bool, List[str]]:
     """
-    GET UpdateRankingRest — endpoint já implantado na org Direcional.
-    Retorna (ranking, erro, tentativas).
+    GET UpdateRankingRest.
+    Retorna (ranking, erro, conta_encontrada, tentativas).
     """
     cpf_digitos = normalizar_cpf(cpf_bruto)
     if len(cpf_digitos) != 11:
-        return None, "Informe um CPF válido com 11 dígitos.", []
+        return None, "Informe um CPF válido com 11 dígitos.", False, []
 
     tentativas: List[str] = []
-    candidatos = (cpf_mascarado(cpf_digitos), cpf_digitos)
+    # Testes Apex (UpdateRankingRestTest) usam CPF só com dígitos.
+    candidatos = (cpf_digitos, cpf_mascarado(cpf_digitos))
     ultimo_erro: Optional[str] = None
+    conta_encontrada = False
 
     for cpf_param in candidatos:
         tentativas.append(f"GET /services/apexrest/{APEX_REST_UPDATE_RANKING}?cpf={cpf_param}")
@@ -121,25 +120,27 @@ def buscar_ranking_via_rest(
                 headers={"Authorization": f"Bearer {sf.session_id}"},
                 timeout=30,
             )
+            if resp.status_code == 403:
+                return None, "Sem permissão para executar UpdateRankingRest.", False, tentativas
             resp.raise_for_status()
-            ranking, erro = _parse_resposta_update_ranking(resp.text)
+            ranking, erro, encontrada = _parse_resposta_update_ranking(resp.text)
+            conta_encontrada = conta_encontrada or encontrada
             if ranking:
-                return ranking, None, tentativas
-            if erro and "não encontrada" not in erro.lower():
-                return None, erro, tentativas
-            ultimo_erro = erro
+                return ranking, None, True, tentativas
+            if erro and "não encontrada" in erro.lower():
+                ultimo_erro = erro
+                continue
+            if encontrada:
+                return None, None, True, tentativas
+            if erro:
+                return None, erro, False, tentativas
         except Exception as exc:
-            status = getattr(getattr(exc, "response", None), "status_code", None)
-            if status == 403:
-                return None, None, tentativas
             texto = str(exc)
             if "403" in texto:
-                return None, None, tentativas
-            if "404" in texto or "NOT_FOUND" in texto:
-                return None, None, tentativas
-            return None, texto, tentativas
+                return None, "Sem permissão para executar UpdateRankingRest.", False, tentativas
+            return None, texto, False, tentativas
 
-    return None, ultimo_erro or "Nenhuma conta encontrada para o CPF informado.", tentativas
+    return None, ultimo_erro or "Nenhuma conta encontrada para o CPF informado.", conta_encontrada, tentativas
 
 
 def aguardar_ranking_via_rest(
@@ -155,7 +156,7 @@ def aguardar_ranking_via_rest(
     ultimo_erro: Optional[str] = None
 
     while time.monotonic() < fim:
-        ranking, erro, _ = buscar_ranking_via_rest(sf, cpf_bruto)
+        ranking, erro, _, _ = buscar_ranking_via_rest(sf, cpf_bruto)
         ultimo_ranking = ranking
         ultimo_erro = erro
         if ranking and ranking != ranking_anterior:
@@ -173,41 +174,26 @@ def buscar_conta_por_cpf(sf, cpf_bruto: str) -> Tuple[Optional[Dict[str, Any]], 
         return None, "Informe um CPF válido com 11 dígitos."
 
     mascara = cpf_mascarado(cpf_digitos)
-    soql = f"""
-        SELECT
-            Id,
-            Name,
-            CPF__c,
-            Ranking__c,
-            Ranking_Score__c,
-            UltimaConsultaCPF__c,
-            LastModifiedDate
-        FROM Account
-        WHERE CPF__c = '{_escape_soql(mascara)}'
-        ORDER BY LastModifiedDate DESC
-        LIMIT 1
-    """
-    try:
-        res = sf.query(soql)
-        registros = res.get("records") or []
-        if registros:
-            return registros[0], None
-
-        soql_digits = f"""
-            SELECT Id, Name, CPF__c, Ranking__c, Ranking_Score__c,
-                   UltimaConsultaCPF__c, LastModifiedDate
+    campos = (
+        "Id, Name, CPF__c, Ranking__c, Ranking_Score__c, "
+        "UltimaConsultaCPF__c, Regional__c, Regional_Comercial__c, LastModifiedDate"
+    )
+    for cpf_valor in (cpf_digitos, mascara):
+        soql = f"""
+            SELECT {campos}
             FROM Account
-            WHERE CPF__c = '{_escape_soql(cpf_digitos)}'
+            WHERE CPF__c = '{_escape_soql(cpf_valor)}'
             ORDER BY LastModifiedDate DESC
             LIMIT 1
         """
-        res2 = sf.query(soql_digits)
-        registros2 = res2.get("records") or []
-        if registros2:
-            return registros2[0], None
-        return None, "Nenhuma conta encontrada para o CPF informado."
-    except Exception as exc:
-        return None, f"Erro ao consultar o Salesforce: {exc}"
+        try:
+            res = sf.query(soql)
+            registros = res.get("records") or []
+            if registros:
+                return registros[0], None
+        except Exception as exc:
+            return None, f"Erro ao consultar o Salesforce: {exc}"
+    return None, "Nenhuma conta encontrada para o CPF informado."
 
 
 def buscar_oportunidade_recente(sf, account_id: str) -> Optional[str]:
@@ -241,119 +227,73 @@ def ler_ranking_conta(sf, account_id: str) -> Dict[str, Any]:
     return registros[0]
 
 
-def consultar_ranking_risk3(
-    sf,
-    cpf_bruto: str,
-    regional_comercial: Optional[str] = None,
-) -> Tuple[bool, Optional[str], str, Optional[str], List[str]]:
-    """
-    Chama IntegracaoRisk3 via Apex REST.
-    Retorna (ok, ranking, mensagem, account_id, tentativas).
-    """
-    cpf_digitos = normalizar_cpf(cpf_bruto)
-    regional = (regional_comercial or regional_comercial_padrao()).strip().upper()
-    payload = {"cpf": cpf_digitos, "regionalComercial": regional}
-    tentativa = f"POST /services/apexrest/{APEX_REST_RANKING} {payload}"
-
-    try:
-        url = _url_apex_rest(sf, APEX_REST_RANKING)
-        resp = sf.session.post(
-            url,
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {sf.session_id}",
-                "Content-Type": "application/json",
-            },
-            timeout=60,
-        )
-        resp.raise_for_status()
-        resposta = resp.json()
-        ranking = resposta.get("ranking")
-        mensagem = resposta.get("mensagem") or resposta.get("resultadoIntegracao") or ""
-        ok = bool(resposta.get("ok")) or bool(ranking)
-        account_id = resposta.get("accountId")
-        return ok, ranking, mensagem, account_id, [tentativa]
-    except Exception as exc:
-        texto = str(exc)
-        if "NOT_FOUND" in texto or "404" in texto:
-            return False, None, ERRO_APEX_NAO_IMPLANTADO, None, [tentativa]
-        return False, None, texto, None, [tentativa]
+def _extrair_mensagem_risk3(resposta: Any) -> str:
+    if not resposta:
+        return ""
+    if isinstance(resposta, str):
+        return resposta
+    if isinstance(resposta, dict):
+        for chave in ("outputValues", "actionResults", "result", "message"):
+            if chave in resposta:
+                return _extrair_mensagem_risk3(resposta[chave])
+        if "result" in resposta:
+            return str(resposta.get("result") or "")
+    if isinstance(resposta, list) and resposta:
+        partes = []
+        for item in resposta:
+            if isinstance(item, dict):
+                partes.append(str(item.get("result") or item.get("outputValues") or item))
+            else:
+                partes.append(str(item))
+        return "; ".join(p for p in partes if p)
+    return str(resposta)
 
 
-def _interpretar_erro_disparo(exc: Exception) -> str:
-    texto = str(exc)
-    if "-1577168114" in texto or "UNKNOWN_EXCEPTION" in texto:
-        return ERRO_SCREEN_FLOW_API
-    return texto
-
-
-def disparar_consulta_ranking(
+def disparar_integracao_risk3(
     sf,
     account_id: str,
     opportunity_id: Optional[str] = None,
-) -> Tuple[bool, Optional[str], List[str]]:
-    """Fallback legado: quick actions (Screen Flow)."""
+    *,
+    bypass: bool = True,
+) -> Tuple[bool, str, List[str]]:
+    """
+    Invoca IntegracaoRisk3.consultarStatusCPFCNPJ via Actions API.
+    """
     tentativas: List[str] = []
-    payloads = [
-        {"contextId": account_id},
-        {"recordId": account_id},
-        {"inputs": [{"name": "recordId", "value": account_id}]},
+    payloads: List[Dict[str, Any]] = [
+        {
+            "inputs": [
+                {
+                    "Account": {"id": account_id},
+                    "Opportunity": {"id": opportunity_id} if opportunity_id else None,
+                    "bypassRisk3": bypass,
+                }
+            ]
+        },
+        {
+            "inputs": [
+                {
+                    "Account": account_id,
+                    "bypassRisk3": bypass,
+                }
+            ]
+        },
     ]
 
+    ultimo_erro = ""
     for payload in payloads:
-        label = f"POST {QA_ACCOUNT} {payload}"
+        label = f"POST {APEX_ACTION_INTEGRACAO_RISK3} {json.dumps(payload, ensure_ascii=False)}"
         tentativas.append(label)
         try:
-            sf.restful(QA_ACCOUNT, method="POST", json=payload)
-            return True, None, tentativas
+            resposta = sf.restful(APEX_ACTION_INTEGRACAO_RISK3, method="POST", json=payload)
+            mensagem = _extrair_mensagem_risk3(resposta)
+            return True, mensagem or "IntegracaoRisk3 executada.", tentativas
         except Exception as exc:
-            err = _interpretar_erro_disparo(exc)
-            if err != ERRO_SCREEN_FLOW_API:
-                return False, err, tentativas
+            ultimo_erro = str(exc)
+            if "NOT_FOUND" in ultimo_erro or "404" in ultimo_erro:
+                return False, "Ação Apex IntegracaoRisk3 não encontrada ou sem permissão.", tentativas
 
-    if opportunity_id:
-        for payload in ({"contextId": opportunity_id}, {"recordId": opportunity_id}):
-            label = f"POST {QA_OPPORTUNITY} {payload}"
-            tentativas.append(label)
-            try:
-                sf.restful(QA_OPPORTUNITY, method="POST", json=payload)
-                return True, None, tentativas
-            except Exception as exc:
-                err = _interpretar_erro_disparo(exc)
-                if err != ERRO_SCREEN_FLOW_API:
-                    return False, err, tentativas
-
-    return False, ERRO_SCREEN_FLOW_API, tentativas
-
-
-def aguardar_atualizacao_ranking(
-    sf,
-    account_id: str,
-    *,
-    timeout_seg: float = 90.0,
-    intervalo_seg: float = 5.0,
-    ranking_anterior: Optional[str] = None,
-    ultima_consulta_anterior: Optional[str] = None,
-) -> Dict[str, Any]:
-    fim = time.monotonic() + timeout_seg
-    ultimo = ler_ranking_conta(sf, account_id)
-
-    while time.monotonic() < fim:
-        atual = ler_ranking_conta(sf, account_id)
-        ranking_atual = atual.get("Ranking__c")
-        ultima_atual = atual.get("UltimaConsultaCPF__c")
-
-        mudou_ranking = ranking_atual and ranking_atual != ranking_anterior
-        mudou_data = ultima_atual and ultima_atual != ultima_consulta_anterior
-        preencheu_ranking = ranking_atual and not ranking_anterior
-
-        if mudou_ranking or mudou_data or preencheu_ranking:
-            return atual
-
-        time.sleep(intervalo_seg)
-        ultimo = atual
-
-    return ultimo
+    return False, ultimo_erro or "Falha ao invocar IntegracaoRisk3.", tentativas
 
 
 def _montar_resultado(conta: Dict[str, Any], cpf_digitos: str, **extra) -> ResultadoRanking:
@@ -377,28 +317,22 @@ def _resultado_de_ranking_direto(
     mensagem: str,
     account_id: Optional[str],
     *,
-    atualizacao_solicitada: bool,
-    tentativas: List[str],
-    disparada: bool,
+    atualizacao_solicitada: bool = False,
+    tentativas: Optional[List[str]] = None,
+    disparada: bool = False,
     erro: Optional[str] = None,
 ) -> ResultadoRanking:
-    conta: Dict[str, Any] = {
-        "Id": account_id,
-        "Name": None,
-        "Ranking__c": ranking,
-        "Ranking_Score__c": None,
-        "UltimaConsultaCPF__c": None,
-    }
-    resultado = _montar_resultado(
-        conta,
-        cpf_digitos,
+    resultado = ResultadoRanking(
+        ok=bool(ranking),
+        cpf=cpf_digitos,
+        account_id=account_id,
+        ranking=ranking,
+        mensagem=mensagem,
         atualizacao_solicitada=atualizacao_solicitada,
         atualizacao_disparada=disparada,
         atualizacao_erro=erro,
-        tentativas_disparo=tentativas,
+        tentativas_disparo=tentativas or [],
     )
-    resultado.mensagem = mensagem or resultado.mensagem
-    resultado.ok = bool(ranking)
     return resultado
 
 
@@ -411,144 +345,125 @@ def consultar_ranking(
     timeout_seg: float = 90.0,
     intervalo_seg: float = 5.0,
 ) -> ResultadoRanking:
+    _ = regional_comercial  # reservado; regional vem dos campos da Account na org
     cpf_digitos = normalizar_cpf(cpf_bruto)
     if len(cpf_digitos) != 11:
         return ResultadoRanking(ok=False, cpf=cpf_digitos, mensagem="Informe um CPF válido com 11 dígitos.")
 
-    conta, erro = buscar_conta_por_cpf(sf, cpf_bruto)
+    conta, erro_soql = buscar_conta_por_cpf(sf, cpf_bruto)
     opp_id = buscar_oportunidade_recente(sf, conta["Id"]) if conta else None
 
     if forcar_atualizacao:
-        ok_r3, ranking_r3, msg_r3, acc_r3, tentativas = consultar_ranking_risk3(
-            sf, cpf_bruto, regional_comercial
-        )
-        if ranking_r3 or ok_r3:
-            if acc_r3:
+        if not conta:
+            return ResultadoRanking(
+                ok=False,
+                cpf=cpf_digitos,
+                mensagem=(
+                    "Não há conta cadastrada com este CPF no Salesforce. "
+                    "A IntegracaoRisk3 exige uma Account existente."
+                ),
+            )
+
+        disparou, msg_r3, tentativas = disparar_integracao_risk3(sf, conta["Id"], opp_id, bypass=True)
+        ranking_anterior = conta.get("Ranking__c")
+
+        if disparou:
+            ranking_poll, err_poll = aguardar_ranking_via_rest(
+                sf,
+                cpf_bruto,
+                timeout_seg=timeout_seg,
+                intervalo_seg=intervalo_seg,
+                ranking_anterior=ranking_anterior,
+            )
+            if not ranking_poll:
                 try:
-                    conta_atual = ler_ranking_conta(sf, acc_r3)
-                    return _montar_resultado(
-                        conta_atual,
-                        cpf_digitos,
-                        opportunity_id=opp_id,
-                        atualizacao_solicitada=True,
-                        atualizacao_disparada=True,
-                        tentativas_disparo=tentativas,
-                        mensagem=msg_r3 or "Ranking atualizado via Risk3.",
-                    )
+                    atual = ler_ranking_conta(sf, conta["Id"])
+                    if atual.get("Ranking__c"):
+                        ranking_poll = atual.get("Ranking__c")
                 except Exception:
                     pass
-            return _resultado_de_ranking_direto(
-                cpf_digitos,
-                ranking_r3,
-                msg_r3 or "Consulta Risk3 executada.",
-                acc_r3,
-                atualizacao_solicitada=True,
-                tentativas=tentativas,
-                disparada=True,
-            )
 
-        ranking_poll, err_poll = aguardar_ranking_via_rest(
-            sf,
-            cpf_bruto,
-            timeout_seg=timeout_seg,
-            intervalo_seg=intervalo_seg,
-            ranking_anterior=conta.get("Ranking__c") if conta else None,
-        )
-        if ranking_poll:
-            return _resultado_de_ranking_direto(
-                cpf_digitos,
-                ranking_poll,
-                "Ranking atualizado após consulta Risk3.",
-                conta.get("Id") if conta else acc_r3,
-                atualizacao_solicitada=True,
-                tentativas=tentativas,
-                disparada=True,
-            )
-
-        if ERRO_APEX_NAO_IMPLANTADO not in msg_r3 and conta:
-            disparou, err, tentativas_qa = disparar_consulta_ranking(sf, conta["Id"], opp_id)
-            tentativas.extend(tentativas_qa)
-            if disparou:
-                atualizada = aguardar_atualizacao_ranking(
-                    sf,
-                    conta["Id"],
-                    timeout_seg=timeout_seg,
-                    intervalo_seg=intervalo_seg,
-                    ranking_anterior=conta.get("Ranking__c"),
-                    ultima_consulta_anterior=conta.get("UltimaConsultaCPF__c"),
-                )
-                resultado = _montar_resultado(
-                    atualizada,
+            if ranking_poll:
+                return _resultado_de_ranking_direto(
                     cpf_digitos,
-                    opportunity_id=opp_id,
+                    ranking_poll,
+                    msg_r3 or "Ranking atualizado via IntegracaoRisk3.",
+                    conta["Id"],
                     atualizacao_solicitada=True,
-                    atualizacao_disparada=True,
-                    tentativas_disparo=tentativas,
+                    tentativas=tentativas,
+                    disparada=True,
                 )
-                if resultado.ranking:
-                    resultado.ok = True
-                    resultado.mensagem = "Ranking atualizado após nova consulta."
-                else:
-                    resultado.mensagem = (
-                        "Consulta disparada, mas o ranking não foi atualizado dentro do tempo de espera."
-                    )
-                return resultado
+
             return ResultadoRanking(
-                ok=bool(conta.get("Ranking__c")),
+                ok=bool(ranking_anterior),
                 cpf=cpf_digitos,
-                account_id=conta.get("Id"),
-                ranking=conta.get("Ranking__c"),
-                mensagem=f"Nova consulta não pôde ser disparada. {err or msg_r3}",
+                account_id=conta["Id"],
+                ranking=ranking_anterior,
+                mensagem=msg_r3 or err_poll or "Consulta Risk3 enviada; ranking ainda não disponível.",
                 atualizacao_solicitada=True,
-                atualizacao_disparada=False,
-                atualizacao_erro=err or msg_r3,
+                atualizacao_disparada=True,
+                atualizacao_erro=err_poll,
                 tentativas_disparo=tentativas,
             )
 
-        if conta:
-            return ResultadoRanking(
-                ok=bool(conta.get("Ranking__c")),
-                cpf=cpf_digitos,
-                account_id=conta.get("Id"),
-                ranking=conta.get("Ranking__c"),
-                mensagem=msg_r3,
-                atualizacao_solicitada=True,
-                atualizacao_disparada=False,
-                atualizacao_erro=msg_r3,
-                tentativas_disparo=tentativas,
-            )
         return ResultadoRanking(
-            ok=False,
+            ok=bool(conta.get("Ranking__c")),
             cpf=cpf_digitos,
-            mensagem=msg_r3,
+            account_id=conta["Id"],
+            ranking=conta.get("Ranking__c"),
+            mensagem=f"Não foi possível disparar IntegracaoRisk3. {msg_r3}",
             atualizacao_solicitada=True,
             atualizacao_disparada=False,
             atualizacao_erro=msg_r3,
             tentativas_disparo=tentativas,
         )
 
-    ranking_rest, err_rest, tentativas_rest = buscar_ranking_via_rest(sf, cpf_bruto)
+    ranking_rest, err_rest, conta_rest, tent_rest = buscar_ranking_via_rest(sf, cpf_bruto)
     if ranking_rest:
-        conta_ref, _ = buscar_conta_por_cpf(sf, cpf_bruto)
-        opp = buscar_oportunidade_recente(sf, conta_ref["Id"]) if conta_ref else None
+        conta_ref = conta or (buscar_conta_por_cpf(sf, cpf_bruto)[0])
         return ResultadoRanking(
             ok=True,
             cpf=cpf_digitos,
             account_id=conta_ref.get("Id") if conta_ref else None,
             ranking=ranking_rest,
-            opportunity_id=opp,
+            opportunity_id=opp_id,
             mensagem="Ranking encontrado.",
-            tentativas_disparo=tentativas_rest,
+            tentativas_disparo=tent_rest,
         )
 
-    if err_rest and "não encontrada" in err_rest.lower():
-        return ResultadoRanking(ok=False, cpf=cpf_digitos, mensagem=err_rest)
-
-    if erro or not conta:
+    if not conta and not conta_rest:
         return ResultadoRanking(
             ok=False,
             cpf=cpf_digitos,
-            mensagem=err_rest or erro or "Conta não encontrada.",
+            mensagem="Nenhuma conta encontrada para o CPF informado.",
+            tentativas_disparo=tent_rest,
         )
 
-    return _montar_resultado(conta, cpf_digitos, opportunity_id=opp_id)
+    if conta_rest and not ranking_rest:
+        return ResultadoRanking(
+            ok=False,
+            cpf=cpf_digitos,
+            account_id=conta.get("Id") if conta else None,
+            ranking=None,
+            mensagem="Conta encontrada, mas sem ranking cadastrado.",
+            tentativas_disparo=tent_rest,
+        )
+
+    if err_rest and "permissão" in err_rest.lower() and conta:
+        return _montar_resultado(conta, cpf_digitos, opportunity_id=opp_id, tentativas_disparo=tent_rest)
+
+    if conta:
+        return _montar_resultado(
+            conta,
+            cpf_digitos,
+            opportunity_id=opp_id,
+            mensagem=err_rest or erro_soql or "Consulta concluída.",
+            tentativas_disparo=tent_rest,
+        )
+
+    return ResultadoRanking(
+        ok=False,
+        cpf=cpf_digitos,
+        mensagem=err_rest or erro_soql or "Conta não encontrada.",
+        tentativas_disparo=tent_rest,
+    )
