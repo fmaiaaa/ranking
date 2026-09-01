@@ -194,12 +194,18 @@ def _cabecalho_pagina() -> None:
         f'<div class="ficha-hero-stack">'
         f'<div class="ficha-hero">'
         f'<p class="ficha-title">Consulta de Ranking</p>'
-        f'<p class="ficha-subtitle">developed by Lucas Maia</p>'
         f"</div>"
         f'<div class="ficha-hero-bar-wrap" aria-hidden="true">'
         f'<div class="ficha-hero-bar"></div>'
         f"</div>"
         f"</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _rodape_pagina() -> None:
+    st.markdown(
+        '<p class="page-footer">developed by Lucas Maia</p>',
         unsafe_allow_html=True,
     )
 
@@ -266,10 +272,10 @@ def aplicar_estilo() -> None:
             justify-content: center !important;
         }}
         .block-container {{
-            max-width: 920px !important;
-            width: min(920px, 94vw) !important;
+            max-width: 1180px !important;
+            width: min(1180px, 97vw) !important;
             margin: auto !important;
-            padding: 2.75rem 3rem 3rem 3rem !important;
+            padding: 2.75rem 3.5rem 2.25rem 3.5rem !important;
             min-height: 520px !important;
             background: rgba(255, 255, 255, 0.82) !important;
             backdrop-filter: blur(18px) saturate(1.15);
@@ -301,7 +307,8 @@ def aplicar_estilo() -> None:
             text-align: center;
             padding: 0.5rem 0 0 0;
             margin: 0 auto;
-            max-width: 640px;
+            max-width: 100%;
+            width: 100%;
             animation: fichaFadeIn 0.85s cubic-bezier(0.22, 1, 0.36, 1) 0.1s both;
         }}
         .ficha-hero .ficha-title {{
@@ -313,18 +320,29 @@ def aplicar_estilo() -> None:
             line-height: 1.25;
             letter-spacing: -0.02em;
         }}
-        .ficha-hero .ficha-subtitle {{
-            font-family: 'Inter', sans-serif;
-            font-size: 0.92rem;
-            font-weight: 500;
-            color: {COR_TEXTO_MUTED};
-            margin: 0.55rem 0 0 0;
-            letter-spacing: 0.04em;
-            text-transform: lowercase;
-        }}
         .ficha-hero-bar-wrap {{
             width: 100%;
             margin: clamp(1rem, 2.8vw, 1.45rem) 0 1.75rem;
+        }}
+        .page-footer {{
+            font-family: 'Inter', sans-serif;
+            font-size: 0.88rem;
+            font-weight: 500;
+            color: {COR_TEXTO_MUTED};
+            text-align: center;
+            margin: 2.5rem 0 0.25rem 0;
+            padding-top: 1.25rem;
+            border-top: 1px solid rgba({RGB_AZUL_CSS}, 0.1);
+            letter-spacing: 0.04em;
+            text-transform: lowercase;
+            width: 100%;
+        }}
+        [data-testid="stTextInput"],
+        [data-testid="stButton"],
+        .direcional-tqdm,
+        .ranking-kpi {{
+            width: 100% !important;
+            max-width: 100% !important;
         }}
         .ficha-hero-bar {{
             height: 4px;
@@ -562,6 +580,8 @@ def main() -> None:
             """,
             unsafe_allow_html=True,
         )
+
+    _rodape_pagina()
 
 
 if __name__ == "__main__":
