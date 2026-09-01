@@ -3,8 +3,8 @@
 Consulta de Ranking do Cliente — Direcional
 Layout alinhado ao velocimetro.py (Ficha Direcional).
 
-Fluxo: SOQL na Account; se não houver conta, cria DIRESIMULATOR temporária,
-consulta Risk3, exibe o ranking e remove a conta ao final.
+Fluxo: localiza Account; dispara Risk3 e polling REST; SOQL só como fallback.
+Sem conta, cria DIRESIMULATOR temporária, consulta e remove ao final.
 
 Logos esperadas na raiz do repositório (mesmos nomes do velocímetro):
   - 502.57_LOGO DIRECIONAL_V2F-01.png
@@ -95,10 +95,9 @@ class TqdmDirecional:
         )
 
 
-def total_passos_consulta(forcar_atualizacao: bool) -> int:
+def total_passos_consulta() -> int:
     poll_passos = int(TIMEOUT_CONSULTA_SEG / INTERVALO_POLL_SEG)
-    overhead = 4 if forcar_atualizacao else 3
-    return poll_passos + overhead
+    return poll_passos + 4
 
 
 def _resolver_png_raiz(nome: str) -> Path | None:
@@ -417,14 +416,6 @@ def main() -> None:
         st.session_state.ultimo_resultado = None
 
     cpf_entrada = st.text_input("CPF do cliente", value="", placeholder="Ex.: 000.000.000-00")
-    forcar_atualizacao = st.checkbox(
-        "Atualizar ranking (consulta Risk3)",
-        value=False,
-        help=(
-            "Com conta existente, dispara IntegracaoRisk3 e aguarda o ranking. "
-            "Sem conta, o app cria uma Account DIRESIMULATOR temporária automaticamente."
-        ),
-    )
     regional = regional_comercial_padrao()
 
     if st.button("Consultar", type="primary", use_container_width=True, key="btn_consultar"):
@@ -458,18 +449,13 @@ def main() -> None:
 
                 if st.session_state.sf is not None:
                     barra = TqdmDirecional(
-                        total=total_passos_consulta(forcar_atualizacao),
-                        desc=(
-                            "Atualizando ranking via Risk3..."
-                            if forcar_atualizacao
-                            else "Consultando ranking..."
-                        ),
+                        total=total_passos_consulta(),
+                        desc="Consultando ranking...",
                     )
                     try:
                         resultado = consultar_ranking(
                             st.session_state.sf,
                             texto,
-                            forcar_atualizacao=forcar_atualizacao,
                             regional_comercial=regional,
                             timeout_seg=TIMEOUT_CONSULTA_SEG,
                             intervalo_seg=INTERVALO_POLL_SEG,
@@ -497,7 +483,7 @@ def main() -> None:
                         }
                         if resultado.atualizacao_erro:
                             st.warning(resultado.atualizacao_erro)
-                        elif forcar_atualizacao and not resultado.ranking:
+                        elif not resultado.ranking:
                             st.info(resultado.mensagem)
 
     dados = st.session_state.ultimo_resultado

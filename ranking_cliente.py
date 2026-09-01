@@ -672,7 +672,6 @@ def consultar_ranking(
     sf,
     cpf_bruto: str,
     *,
-    forcar_atualizacao: bool = False,
     regional_comercial: Optional[str] = None,
     timeout_seg: float = 90.0,
     intervalo_seg: float = 5.0,
@@ -680,9 +679,9 @@ def consultar_ranking(
 ) -> ResultadoRanking:
     """
     Fluxo principal:
-    1. SOQL na Account por CPF.
-    2. Se não existir conta → cria DIRESIMULATOR, consulta Risk3, devolve ranking e exclui.
-    3. Se existir conta → lê ranking (SOQL/REST) ou atualiza via Risk3 quando solicitado.
+    1. Localiza Account por CPF (SOQL interno).
+    2. Sem conta → DIRESIMULATOR + Risk3 + polling REST.
+    3. Com conta → Risk3 + polling REST; SOQL na Account só como fallback.
     """
     regional = regional_comercial or regional_comercial_padrao()
     cpf_digitos = normalizar_cpf(cpf_bruto)
@@ -702,99 +701,58 @@ def consultar_ranking(
         )
 
     opp_id = buscar_oportunidade_recente(sf, conta["Id"])
+    ranking_anterior = conta.get("Ranking__c")
 
-    if forcar_atualizacao:
-        disparou, msg_r3, tentativas = disparar_integracao_risk3(sf, conta["Id"], opp_id, bypass=True)
-        _tick_progresso(barra_progresso)
-        ranking_anterior = conta.get("Ranking__c")
-
-        if disparou:
-            ranking_poll, err_poll = aguardar_ranking_via_rest(
-                sf,
-                cpf_bruto,
-                timeout_seg=timeout_seg,
-                intervalo_seg=intervalo_seg,
-                ranking_anterior=ranking_anterior,
-                barra_progresso=barra_progresso,
-            )
-            if not ranking_poll:
-                try:
-                    atual = ler_ranking_conta(sf, conta["Id"])
-                    if atual.get("Ranking__c"):
-                        ranking_poll = atual.get("Ranking__c")
-                except Exception:
-                    pass
-
-            if ranking_poll:
-                return _resultado_de_ranking_direto(
-                    cpf_digitos,
-                    ranking_poll,
-                    msg_r3 or "Ranking atualizado via IntegracaoRisk3.",
-                    conta["Id"],
-                    atualizacao_solicitada=True,
-                    tentativas=tentativas,
-                    disparada=True,
-                )
-
-            return ResultadoRanking(
-                ok=bool(ranking_anterior),
-                cpf=cpf_digitos,
-                account_id=conta["Id"],
-                ranking=ranking_anterior,
-                mensagem=msg_r3 or err_poll or "Consulta Risk3 enviada; ranking ainda não disponível.",
-                atualizacao_solicitada=True,
-                atualizacao_disparada=True,
-                atualizacao_erro=err_poll,
-                tentativas_disparo=tentativas,
-            )
-
-        return ResultadoRanking(
-            ok=bool(conta.get("Ranking__c")),
-            cpf=cpf_digitos,
-            account_id=conta["Id"],
-            ranking=conta.get("Ranking__c"),
-            mensagem=f"Não foi possível disparar IntegracaoRisk3. {msg_r3}",
-            atualizacao_solicitada=True,
-            atualizacao_disparada=False,
-            atualizacao_erro=msg_r3,
-            tentativas_disparo=tentativas,
-        )
-
-    if conta.get("Ranking__c"):
-        _tick_progresso(barra_progresso)
-        return _montar_resultado(
-            conta,
-            cpf_digitos,
-            opportunity_id=opp_id,
-            mensagem="Ranking encontrado via SOQL.",
-        )
-
-    ranking_rest, err_rest, _, tent_rest = buscar_ranking_via_rest(sf, cpf_bruto)
+    disparou, msg_r3, tentativas = disparar_integracao_risk3(sf, conta["Id"], opp_id, bypass=True)
     _tick_progresso(barra_progresso)
-    if ranking_rest:
+
+    ranking_poll: Optional[str] = None
+    err_poll: Optional[str] = None
+
+    if disparou:
+        ranking_poll, err_poll = aguardar_ranking_via_rest(
+            sf,
+            cpf_bruto,
+            timeout_seg=timeout_seg,
+            intervalo_seg=intervalo_seg,
+            ranking_anterior=ranking_anterior,
+            barra_progresso=barra_progresso,
+        )
+
+    if not ranking_poll:
+        try:
+            atual = ler_ranking_conta(sf, conta["Id"])
+            ranking_poll = atual.get("Ranking__c")
+        except Exception:
+            ranking_poll = ranking_anterior
+        _tick_progresso(barra_progresso)
+
+    if ranking_poll:
+        mensagem = (
+            msg_r3 or "Ranking atualizado via IntegracaoRisk3."
+            if disparou
+            else "Ranking encontrado via SOQL (fallback)."
+        )
         return ResultadoRanking(
             ok=True,
             cpf=cpf_digitos,
-            account_id=conta.get("Id"),
-            ranking=ranking_rest,
+            account_id=conta["Id"],
+            ranking=ranking_poll,
             opportunity_id=opp_id,
-            mensagem="Ranking encontrado.",
-            tentativas_disparo=tent_rest,
-        )
-
-    if err_rest and "permissão" in err_rest.lower():
-        return _montar_resultado(
-            conta,
-            cpf_digitos,
-            opportunity_id=opp_id,
-            tentativas_disparo=tent_rest,
+            mensagem=mensagem,
+            atualizacao_solicitada=True,
+            atualizacao_disparada=disparou,
+            tentativas_disparo=tentativas,
         )
 
     return ResultadoRanking(
         ok=False,
         cpf=cpf_digitos,
-        account_id=conta.get("Id"),
+        account_id=conta["Id"],
         ranking=None,
-        mensagem=err_rest or erro_soql or "Conta encontrada, mas sem ranking cadastrado.",
-        tentativas_disparo=tent_rest,
+        mensagem=msg_r3 or err_poll or erro_soql or "Ranking não disponível após consulta Risk3.",
+        atualizacao_solicitada=True,
+        atualizacao_disparada=disparou,
+        atualizacao_erro=err_poll,
+        tentativas_disparo=tentativas,
     )
