@@ -70,19 +70,31 @@ class ResultadoRanking:
         return asdict(self)
 
 
+def _normalizar_texto_resposta(texto: str) -> str:
+    resposta = (texto or "").strip()
+    if resposta.startswith('"') and resposta.endswith('"'):
+        try:
+            decodificado = json.loads(resposta)
+            if isinstance(decodificado, str):
+                return decodificado.strip()
+        except json.JSONDecodeError:
+            pass
+    return resposta
+
+
 def _parse_resposta_update_ranking(texto: str) -> Tuple[Optional[str], Optional[str], bool]:
     """
     Retorna (ranking, erro, conta_encontrada).
-  ranking None + conta_encontrada True = conta existe sem ranking.
+    ranking None + conta_encontrada True = conta existe sem ranking.
     """
-    resposta = (texto or "").strip()
+    resposta = _normalizar_texto_resposta(texto)
     if resposta.startswith("Ranking:"):
         ranking = resposta[len("Ranking:") :].strip()
         if ranking.lower() in ("", "null", "none"):
             return None, None, True
         return ranking, None, True
     if resposta == "Conta não encontrada.":
-        return None, "Nenhuma conta encontrada para o CPF informado.", False
+        return None, None, False
     if resposta == "Informe um dos parâmetros: id_risk3, cpf ou cnpj.":
         return None, resposta, False
     if resposta.startswith("Erro ao buscar ranking:"):
@@ -127,9 +139,6 @@ def buscar_ranking_via_rest(
             conta_encontrada = conta_encontrada or encontrada
             if ranking:
                 return ranking, None, True, tentativas
-            if erro and "não encontrada" in erro.lower():
-                ultimo_erro = erro
-                continue
             if encontrada:
                 return None, None, True, tentativas
             if erro:
@@ -298,6 +307,9 @@ def disparar_integracao_risk3(
 
 def _montar_resultado(conta: Dict[str, Any], cpf_digitos: str, **extra) -> ResultadoRanking:
     ranking = conta.get("Ranking__c")
+    mensagem = extra.pop("mensagem", None)
+    if not mensagem:
+        mensagem = "Ranking encontrado." if ranking else "Conta encontrada, mas sem ranking cadastrado."
     return ResultadoRanking(
         ok=bool(ranking),
         cpf=cpf_digitos,
@@ -306,7 +318,7 @@ def _montar_resultado(conta: Dict[str, Any], cpf_digitos: str, **extra) -> Resul
         ranking=ranking,
         ranking_score=conta.get("Ranking_Score__c"),
         ultima_consulta_cpf=conta.get("UltimaConsultaCPF__c"),
-        mensagem="Ranking encontrado." if ranking else "Conta encontrada, mas sem ranking cadastrado.",
+        mensagem=mensagem,
         **extra,
     )
 
