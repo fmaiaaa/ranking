@@ -84,7 +84,10 @@ class TqdmDirecional:
 <div class="direcional-tqdm">
   <div class="direcional-tqdm-header">
     <span class="direcional-tqdm-desc">{self.desc}</span>
-    <span class="direcional-tqdm-pct">{pct:.0f}%</span>
+    <span class="direcional-tqdm-pct-wrap">
+      <span class="direcional-tqdm-spinner" aria-hidden="true"></span>
+      <span class="direcional-tqdm-pct">{pct:.0f}%</span>
+    </span>
   </div>
   <div class="direcional-tqdm-track">
     <div class="direcional-tqdm-fill" style="width:{pct:.1f}%;"></div>
@@ -191,6 +194,7 @@ def _cabecalho_pagina() -> None:
         f'<div class="ficha-hero-stack">'
         f'<div class="ficha-hero">'
         f'<p class="ficha-title">Consulta de Ranking</p>'
+        f'<p class="ficha-subtitle">developed by Lucas Maia</p>'
         f"</div>"
         f'<div class="ficha-hero-bar-wrap" aria-hidden="true">'
         f'<div class="ficha-hero-bar"></div>'
@@ -213,6 +217,9 @@ def aplicar_estilo() -> None:
         @keyframes fichaShimmer {{
             0% {{ background-position: 0% 50%; }}
             100% {{ background-position: 200% 50%; }}
+        }}
+        @keyframes direcionalSpin {{
+            to {{ transform: rotate(360deg); }}
         }}
         html, body, :root, [data-testid="stApp"] {{
             color-scheme: light !important;
@@ -242,20 +249,32 @@ def aplicar_estilo() -> None:
         [data-testid="stSidebar"] {{ display: none !important; }}
         [data-testid="stSidebarCollapsedControl"] {{ display: none !important; }}
         [data-testid="stMain"] {{
-            padding-left: clamp(14px, 5vw, 56px) !important;
-            padding-right: clamp(14px, 5vw, 56px) !important;
-            padding-top: clamp(12px, 3.5vh, 40px) !important;
-            padding-bottom: clamp(14px, 4vh, 44px) !important;
+            padding-left: clamp(14px, 4vw, 40px) !important;
+            padding-right: clamp(14px, 4vw, 40px) !important;
+            padding-top: clamp(16px, 3vh, 32px) !important;
+            padding-bottom: clamp(16px, 3vh, 32px) !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            min-height: calc(100vh - 4rem) !important;
+        }}
+        section.main > div {{
+            width: 100%;
+            display: flex !important;
+            flex-direction: column !important;
+            align-items: center !important;
+            justify-content: center !important;
         }}
         .block-container {{
-            max-width: 720px !important;
-            margin-left: auto !important;
-            margin-right: auto !important;
-            padding: 1.45rem 2rem 1.55rem 2rem !important;
-            background: rgba(255, 255, 255, 0.78) !important;
+            max-width: 920px !important;
+            width: min(920px, 94vw) !important;
+            margin: auto !important;
+            padding: 2.75rem 3rem 3rem 3rem !important;
+            min-height: 520px !important;
+            background: rgba(255, 255, 255, 0.82) !important;
             backdrop-filter: blur(18px) saturate(1.15);
             -webkit-backdrop-filter: blur(18px) saturate(1.15);
-            border-radius: 24px !important;
+            border-radius: 28px !important;
             border: 1px solid rgba(255, 255, 255, 0.45) !important;
             box-shadow:
                 0 4px 6px -1px rgba({RGB_AZUL_CSS}, 0.06),
@@ -265,12 +284,12 @@ def aplicar_estilo() -> None:
         }}
         .ficha-logo-wrap {{
             text-align: center;
-            padding: 0.1rem 0 0.45rem 0;
+            padding: 0.25rem 0 0.75rem 0;
         }}
         .ficha-logo-wrap img {{
-            max-height: 72px;
+            max-height: 92px;
             width: auto;
-            max-width: min(280px, 85vw);
+            max-width: min(320px, 88vw);
             object-fit: contain;
             display: inline-block;
         }}
@@ -287,16 +306,25 @@ def aplicar_estilo() -> None:
         }}
         .ficha-hero .ficha-title {{
             font-family: 'Montserrat', sans-serif;
-            font-size: clamp(1.35rem, 3.5vw, 1.75rem);
+            font-size: clamp(1.55rem, 3.8vw, 2rem);
             font-weight: 900;
             color: {COR_AZUL_ESC};
             margin: 0;
             line-height: 1.25;
             letter-spacing: -0.02em;
         }}
+        .ficha-hero .ficha-subtitle {{
+            font-family: 'Inter', sans-serif;
+            font-size: 0.92rem;
+            font-weight: 500;
+            color: {COR_TEXTO_MUTED};
+            margin: 0.55rem 0 0 0;
+            letter-spacing: 0.04em;
+            text-transform: lowercase;
+        }}
         .ficha-hero-bar-wrap {{
             width: 100%;
-            margin: clamp(0.85rem, 2.4vw, 1.2rem) 0 1.25rem;
+            margin: clamp(1rem, 2.8vw, 1.45rem) 0 1.75rem;
         }}
         .ficha-hero-bar {{
             height: 4px;
@@ -307,18 +335,33 @@ def aplicar_estilo() -> None:
             animation: fichaShimmer 4s ease-in-out infinite alternate;
         }}
         div[data-baseweb="input"] {{
-            border-radius: 10px !important;
+            border-radius: 12px !important;
             border: 1px solid #e2e8f0 !important;
             background-color: {COR_INPUT_BG} !important;
+            min-height: 54px !important;
+        }}
+        div[data-baseweb="input"] input {{
+            font-size: 1.08rem !important;
+            padding-top: 14px !important;
+            padding-bottom: 14px !important;
+        }}
+        [data-testid="stTextInput"] label p,
+        [data-testid="stWidgetLabel"] p {{
+            font-size: 1rem !important;
+            font-weight: 600 !important;
+            margin-bottom: 0.45rem !important;
         }}
         .stButton button {{
             font-family: 'Inter', sans-serif;
-            border-radius: 10px !important;
+            border-radius: 12px !important;
             width: 100% !important;
-            height: 42px !important;
+            height: 54px !important;
+            min-height: 54px !important;
+            font-size: 1rem !important;
             font-weight: 700 !important;
             text-transform: uppercase;
-            letter-spacing: 0.05em;
+            letter-spacing: 0.06em;
+            margin-top: 0.35rem !important;
         }}
         .stButton button[kind="primary"] {{
             background: {COR_VERMELHO} !important;
@@ -331,51 +374,72 @@ def aplicar_estilo() -> None:
         .ranking-kpi {{
             background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,251,252,0.9) 100%);
             border: 1px solid rgba(226, 232, 240, 0.9);
-            border-radius: 14px;
-            padding: 22px 16px;
+            border-radius: 16px;
+            padding: 32px 24px;
+            min-height: 140px;
             text-align: center;
             box-shadow: 0 2px 8px rgba({RGB_AZUL_CSS}, 0.06);
             transition: transform 0.3s ease, box-shadow 0.3s ease;
-            margin-top: 0.5rem;
+            margin-top: 1rem;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
         }}
         .ranking-kpi:hover {{
             transform: translateY(-4px);
             box-shadow: 0 10px 20px -5px rgba({RGB_AZUL_CSS}, 0.15);
         }}
         .ranking-kpi .lbl {{
-            font-size: 0.72rem;
+            font-size: 0.82rem;
             font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.08em;
+            letter-spacing: 0.1em;
             color: {COR_TEXTO_MUTED};
         }}
         .ranking-kpi .val {{
             font-family: 'Montserrat', sans-serif;
-            font-size: 1.35rem;
+            font-size: 1.65rem;
             font-weight: 800;
             color: {COR_VERMELHO} !important;
-            margin-top: 8px;
+            margin-top: 12px;
             word-break: break-word;
         }}
         .direcional-tqdm {{
-            margin: 1rem 0 1.25rem;
+            margin: 1.35rem 0 1.5rem;
         }}
         .direcional-tqdm-header {{
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 0.45rem;
-            font-size: 0.85rem;
+            margin-bottom: 0.65rem;
+            font-size: 1rem;
             font-weight: 600;
             color: {COR_AZUL_ESC};
+        }}
+        .direcional-tqdm-pct-wrap {{
+            display: inline-flex;
+            align-items: center;
+            gap: 0.55rem;
+        }}
+        .direcional-tqdm-spinner {{
+            width: 16px;
+            height: 16px;
+            border: 2.5px solid rgba({RGB_AZUL_CSS}, 0.2);
+            border-top-color: {COR_VERMELHO};
+            border-radius: 50%;
+            animation: direcionalSpin 0.75s linear infinite;
+            flex-shrink: 0;
         }}
         .direcional-tqdm-pct {{
             color: {COR_VERMELHO};
             font-weight: 800;
+            font-size: 1.05rem;
+            min-width: 2.75rem;
+            text-align: right;
         }}
         .direcional-tqdm-track {{
             width: 100%;
-            height: 12px;
+            height: 16px;
             border-radius: 999px;
             background: #e8edf3;
             overflow: hidden;
