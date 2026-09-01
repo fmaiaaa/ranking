@@ -8,7 +8,7 @@ import os
 
 import streamlit as st
 
-from ranking_cliente import consultar_ranking, formatar_score, normalizar_cpf
+from ranking_cliente import consultar_ranking, normalizar_cpf
 from salesforce_api import conectar_salesforce
 
 
@@ -259,11 +259,6 @@ Digite o <b>CPF do cliente</b> (com ou sem formatação) para consultar o rankin
                     else:
                         st.session_state.ultimo_resultado = {
                             "ranking_conta": resultado.ranking,
-                            "ranking_score": resultado.ranking_score,
-                            "account_name": resultado.account_name,
-                            "ultima_consulta": resultado.ultima_consulta_cpf,
-                            "mensagem": resultado.mensagem,
-                            "atualizacao_erro": resultado.atualizacao_erro,
                         }
                         if resultado.atualizacao_erro:
                             st.warning(resultado.atualizacao_erro)
@@ -273,21 +268,11 @@ Digite o <b>CPF do cliente</b> (com ou sem formatação) para consultar o rankin
     # Exibição dos dados logo abaixo do botão, dentro do mesmo card
     dados = st.session_state.ultimo_resultado
     if dados:
-        score = dados.get("ranking_score")
-        score_txt = formatar_score(score)
         st.markdown(
             f"""
-<div class="hover-card" style="height:auto; min-height:130px; padding-bottom:22px;">
-  <div class="hover-card-label">Cliente</div>
-  <div class="hover-card-value" style="font-size:0.95rem; color:{COR_AZUL_ESC};">
-    {dados.get('account_name') or '—'}
-  </div>
-  <div class="hover-card-label" style="margin-top:12px;">Ranking do Cliente</div>
+<div class="hover-card">
+  <div class="hover-card-label">Ranking do Cliente</div>
   <div class="hover-card-value">{dados.get('ranking_conta') or '—'}</div>
-  <div class="hover-card-label" style="margin-top:8px;">Score · Última consulta</div>
-  <div class="hover-card-value" style="font-size:0.9rem;">
-    {score_txt} · {dados.get('ultima_consulta') or '—'}
-  </div>
 </div>
             """,
             unsafe_allow_html=True,
