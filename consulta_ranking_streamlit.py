@@ -8,7 +8,7 @@ import os
 
 import streamlit as st
 
-from ranking_cliente import consultar_ranking, normalizar_cpf
+from ranking_cliente import consultar_ranking, normalizar_cpf, regional_comercial_padrao
 from salesforce_api import conectar_salesforce
 
 
@@ -199,13 +199,14 @@ Digite o <b>CPF do cliente</b> (com ou sem formatação) para consultar o rankin
 
     cpf_entrada = st.text_input("CPF do cliente", value="", placeholder="Ex.: 000.000.000-00")
     forcar_atualizacao = st.checkbox(
-        "Atualizar ranking (nova consulta Serasa)",
+        "Atualizar ranking (consulta Risk3)",
         value=False,
         help=(
-            "Tenta disparar automaticamente a ação Consultar Status CPF no Salesforce "
-            "e aguarda até 90 segundos pela atualização."
+            "Dispara IntegracaoRisk3 via Apex REST (ConsultorRankingRisk3) "
+            "e retorna o ranking atualizado."
         ),
     )
+    regional = regional_comercial_padrao()
 
     if st.button("Consultar", type="primary", use_container_width=True, key="btn_consultar"):
         texto = cpf_entrada.strip()
@@ -222,6 +223,10 @@ Digite o <b>CPF do cliente</b> (com ou sem formatação) para consultar o rankin
                         os.environ["SALESFORCE_USER"] = sec.get("USER", "")
                         os.environ["SALESFORCE_PASSWORD"] = sec.get("PASSWORD", "")
                         os.environ["SALESFORCE_TOKEN"] = sec.get("TOKEN", "")
+                        if sec.get("REGIONAL_COMERCIAL"):
+                            os.environ["SALESFORCE_REGIONAL_COMERCIAL"] = str(
+                                sec.get("REGIONAL_COMERCIAL")
+                            ).strip()
                     with st.spinner("Conectando ao Salesforce..."):
                         sf = conectar_salesforce()
                     if not sf:
@@ -243,6 +248,7 @@ Digite o <b>CPF do cliente</b> (com ou sem formatação) para consultar o rankin
                             st.session_state.sf,
                             texto,
                             forcar_atualizacao=forcar_atualizacao,
+                            regional_comercial=regional,
                         )
                     if not resultado.account_id and not resultado.ok:
                         st.markdown(
