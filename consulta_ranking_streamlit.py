@@ -10,6 +10,7 @@ consulta Risk3, exibe o ranking e remove a conta ao final.
 import os
 
 import streamlit as st
+from tqdm import tqdm
 
 from ranking_cliente import consultar_ranking, normalizar_cpf, regional_comercial_padrao
 from salesforce_api import conectar_salesforce
@@ -21,6 +22,57 @@ COR_FUNDO = "#fcfdfe"
 COR_BORDA = "#eef2f6"
 COR_TEXTO_MUTED = "#64748b"
 COR_INPUT_BG = "#f0f2f6"
+TIMEOUT_CONSULTA_SEG = 90.0
+INTERVALO_POLL_SEG = 5.0
+
+
+class TqdmDirecional:
+    """Barra tqdm com gradiente azul → vermelho Direcional para o Streamlit."""
+
+    def __init__(self, total: int, desc: str = "Consultando ranking..."):
+        self.total = max(1, total)
+        self.desc = desc
+        self.n = 0
+        self._slot = st.empty()
+        self._tqdm = tqdm(total=self.total, desc=desc, leave=False, dynamic_ncols=True)
+        self._render()
+
+    def update(self, n: int = 1) -> None:
+        self.n = min(self.n + n, self.total)
+        self._tqdm.update(n)
+        self._render()
+
+    def finish(self) -> None:
+        restante = self.total - self.n
+        if restante > 0:
+            self.update(restante)
+
+    def close(self) -> None:
+        self._tqdm.close()
+        self._slot.empty()
+
+    def _render(self) -> None:
+        pct = (self.n / self.total) * 100
+        self._slot.markdown(
+            f"""
+<div class="direcional-tqdm">
+  <div class="direcional-tqdm-header">
+    <span class="direcional-tqdm-desc">{self.desc}</span>
+    <span class="direcional-tqdm-pct">{pct:.0f}%</span>
+  </div>
+  <div class="direcional-tqdm-track">
+    <div class="direcional-tqdm-fill" style="width:{pct:.1f}%;"></div>
+  </div>
+</div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def total_passos_consulta(forcar_atualizacao: bool) -> int:
+    poll_passos = int(TIMEOUT_CONSULTA_SEG / INTERVALO_POLL_SEG)
+    overhead = 4 if forcar_atualizacao else 3
+    return poll_passos + overhead
 
 
 def aplicar_estilo() -> None:
@@ -164,6 +216,43 @@ def aplicar_estilo() -> None:
             word-break: break-word;
             text-align: center;
         }}
+
+        .direcional-tqdm {{
+            margin: 1rem 0 1.25rem;
+            padding: 0.25rem 0;
+        }}
+
+        .direcional-tqdm-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.45rem;
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: {COR_AZUL_ESC};
+        }}
+
+        .direcional-tqdm-pct {{
+            color: {COR_VERMELHO};
+            font-weight: 800;
+        }}
+
+        .direcional-tqdm-track {{
+            width: 100%;
+            height: 12px;
+            border-radius: 999px;
+            background: #e8edf3;
+            overflow: hidden;
+            border: 1px solid #dbe4ee;
+        }}
+
+        .direcional-tqdm-fill {{
+            height: 100%;
+            border-radius: 999px;
+            background: linear-gradient(90deg, {COR_AZUL_ESC} 0%, {COR_VERMELHO} 100%);
+            transition: width 0.35s ease;
+            box-shadow: 0 1px 4px rgba(227, 6, 19, 0.25);
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -241,18 +330,27 @@ Digite o <b>CPF do cliente</b> (com ou sem formatação) para consultar o rankin
                         st.session_state.sf = sf
 
                 if st.session_state.sf is not None:
-                    msg_spinner = (
-                        "Consultando e aguardando atualização do ranking..."
-                        if forcar_atualizacao
-                        else "Consultando ranking..."
+                    barra = TqdmDirecional(
+                        total=total_passos_consulta(forcar_atualizacao),
+                        desc=(
+                            "Atualizando ranking via Risk3..."
+                            if forcar_atualizacao
+                            else "Consultando ranking..."
+                        ),
                     )
-                    with st.spinner(msg_spinner):
+                    try:
                         resultado = consultar_ranking(
                             st.session_state.sf,
                             texto,
                             forcar_atualizacao=forcar_atualizacao,
                             regional_comercial=regional,
+                            timeout_seg=TIMEOUT_CONSULTA_SEG,
+                            intervalo_seg=INTERVALO_POLL_SEG,
+                            barra_progresso=barra,
                         )
+                    finally:
+                        barra.finish()
+                        barra.close()
                     if not resultado.ok and not resultado.ranking:
                         st.markdown(
                             f"""

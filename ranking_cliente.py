@@ -22,6 +22,11 @@ PREFIXO_CONTA_SIMULADOR = "DIRESIMULATOR"
 _RECORD_TYPE_CLIENTE_PF: Optional[str] = None
 
 
+def _tick_progresso(barra: Any, n: int = 1) -> None:
+    if barra is not None and hasattr(barra, "update"):
+        barra.update(n)
+
+
 def normalizar_cpf(valor: str) -> str:
     if not valor:
         return ""
@@ -370,6 +375,7 @@ def aguardar_ranking_via_rest(
     timeout_seg: float = 90.0,
     intervalo_seg: float = 5.0,
     ranking_anterior: Optional[str] = None,
+    barra_progresso: Any = None,
 ) -> Tuple[Optional[str], Optional[str]]:
     fim = time.monotonic() + timeout_seg
     ultimo_ranking: Optional[str] = None
@@ -380,9 +386,12 @@ def aguardar_ranking_via_rest(
         ultimo_ranking = ranking
         ultimo_erro = erro
         if ranking and ranking != ranking_anterior:
+            _tick_progresso(barra_progresso)
             return ranking, None
         if ranking and not ranking_anterior:
+            _tick_progresso(barra_progresso)
             return ranking, None
+        _tick_progresso(barra_progresso)
         time.sleep(intervalo_seg)
 
     return ultimo_ranking, ultimo_erro
@@ -523,6 +532,7 @@ def consultar_ranking_via_conta_temporaria(
     regional_comercial: Optional[str] = None,
     timeout_seg: float = 90.0,
     intervalo_seg: float = 5.0,
+    barra_progresso: Any = None,
 ) -> ResultadoRanking:
     """
     Cria conta DIRESIMULATOR, consulta Risk3, retorna ranking e remove tudo no finally.
@@ -543,12 +553,14 @@ def consultar_ranking_via_conta_temporaria(
             cpf_bruto,
             regional_comercial=regional_comercial,
         )
+        _tick_progresso(barra_progresso)
         account_id = conta_temp["Id"]
         opp_id = buscar_oportunidade_recente(sf, account_id)
 
         disparou, msg_r3, tentativas = disparar_integracao_risk3(
             sf, account_id, opp_id, bypass=True
         )
+        _tick_progresso(barra_progresso)
         ranking_poll: Optional[str] = None
         err_poll: Optional[str] = None
 
@@ -558,6 +570,7 @@ def consultar_ranking_via_conta_temporaria(
                 cpf_bruto,
                 timeout_seg=timeout_seg,
                 intervalo_seg=intervalo_seg,
+                barra_progresso=barra_progresso,
             )
 
         if not ranking_poll:
@@ -597,6 +610,7 @@ def consultar_ranking_via_conta_temporaria(
         )
     finally:
         if account_id:
+            _tick_progresso(barra_progresso)
             avisos = limpar_conta_simulador(sf, account_id, cpf_bruto)
             if resultado and avisos:
                 resumo = "; ".join(avisos[:2])
@@ -662,6 +676,7 @@ def consultar_ranking(
     regional_comercial: Optional[str] = None,
     timeout_seg: float = 90.0,
     intervalo_seg: float = 5.0,
+    barra_progresso: Any = None,
 ) -> ResultadoRanking:
     """
     Fluxo principal:
@@ -675,6 +690,7 @@ def consultar_ranking(
         return ResultadoRanking(ok=False, cpf=cpf_digitos, mensagem="Informe um CPF válido com 11 dígitos.")
 
     conta, erro_soql = buscar_conta_por_cpf(sf, cpf_bruto)
+    _tick_progresso(barra_progresso)
     if not conta:
         return consultar_ranking_via_conta_temporaria(
             sf,
@@ -682,12 +698,14 @@ def consultar_ranking(
             regional_comercial=regional,
             timeout_seg=timeout_seg,
             intervalo_seg=intervalo_seg,
+            barra_progresso=barra_progresso,
         )
 
     opp_id = buscar_oportunidade_recente(sf, conta["Id"])
 
     if forcar_atualizacao:
         disparou, msg_r3, tentativas = disparar_integracao_risk3(sf, conta["Id"], opp_id, bypass=True)
+        _tick_progresso(barra_progresso)
         ranking_anterior = conta.get("Ranking__c")
 
         if disparou:
@@ -697,6 +715,7 @@ def consultar_ranking(
                 timeout_seg=timeout_seg,
                 intervalo_seg=intervalo_seg,
                 ranking_anterior=ranking_anterior,
+                barra_progresso=barra_progresso,
             )
             if not ranking_poll:
                 try:
@@ -742,6 +761,7 @@ def consultar_ranking(
         )
 
     if conta.get("Ranking__c"):
+        _tick_progresso(barra_progresso)
         return _montar_resultado(
             conta,
             cpf_digitos,
@@ -750,6 +770,7 @@ def consultar_ranking(
         )
 
     ranking_rest, err_rest, _, tent_rest = buscar_ranking_via_rest(sf, cpf_bruto)
+    _tick_progresso(barra_progresso)
     if ranking_rest:
         return ResultadoRanking(
             ok=True,
