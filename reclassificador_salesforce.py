@@ -7,7 +7,8 @@ Fluxo:
   - Localiza a Account existente no Salesforce por CPF.
   - Se a conta não existir, encerra com aviso visual padronizado.
   - Existindo a conta, aciona o fluxo de reclassificação forçando nova análise (Risk3).
-  - Executa o polling até obter o novo parecer e exibe o novo ranking no KPI.
+  - Executa o polling até obter o novo parecer e exibe dois boxes lado a lado:
+    o ranking anterior e o novo ranking.
 
 Logos esperadas na raiz do repositório:
   - 502.57_LOGO DIRECIONAL_V2F-01.png
@@ -426,19 +427,6 @@ def aplicar_estilo() -> None:
         .stButton button[kind="primary"]:hover {{
             background: {COR_VERMELHO_ESCURO} !important;
         }}
-        .reclass-account-details {{
-            background: #ffffff;
-            border: 1px solid #e2e8f0;
-            border-left: 4px solid {COR_AZUL_ESC};
-            border-radius: 12px;
-            padding: 16px 20px;
-            margin-top: 14px;
-            margin-bottom: 14px;
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 10px;
-            font-size: 0.95rem;
-        }}
         .ranking-kpi {{
             background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,251,252,0.9) 100%);
             border: 1px solid rgba(226, 232, 240, 0.9);
@@ -674,7 +662,7 @@ def main() -> None:
     cpf_entrada = st.text_input("CPF do cliente", value="", placeholder="Ex.: 000.000.000-00")
     regional = regional_comercial_padrao()
 
-    if st.button("Reclassificar Conta", type="primary", use_container_width=True, key="btn_reclassificar"):
+    if st.button("Reclassificar", type="primary", use_container_width=True, key="btn_reclassificar"):
         texto = cpf_entrada.strip()
         if not texto:
             st.warning("Informe o CPF do cliente para continuar.")
@@ -721,6 +709,9 @@ Conta não encontrada no Salesforce. Para reclassificar, o cliente já deve esta
                         )
                         st.session_state.ultimo_resultado = None
                     else:
+                        # Guarda o ranking antigo antes do recálculo
+                        ranking_antigo = conta_existente.get("Ranking__c") or "Não informado"
+
                         # 2. Reseta o cache no Salesforce para disparar o recálculo / nova esteira
                         preparar_para_reclassificacao(st.session_state.sf, conta_existente["Id"])
 
@@ -730,7 +721,6 @@ Conta não encontrada no Salesforce. Para reclassificar, o cliente já deve esta
                             desc="Disparando reclassificação e aguardando Risk3...",
                         )
                         try:
-                            # Reutiliza a lógica de consulta/polling do pacote, que agora processa a conta limpa
                             resultado = consultar_ranking(
                                 st.session_state.sf,
                                 texto,
@@ -757,9 +747,8 @@ Conta não encontrada no Salesforce. Para reclassificar, o cliente já deve esta
                             st.session_state.ultimo_resultado = None
                         else:
                             st.session_state.ultimo_resultado = {
-                                "ranking_conta": resultado.ranking,
-                                "nome_cliente": conta_existente.get("Name"),
-                                "ranking_anterior": conta_existente.get("Ranking__c") or "Não classificado",
+                                "ranking_anterior": ranking_antigo,
+                                "ranking_novo": resultado.ranking,
                             }
                             if resultado.atualizacao_erro:
                                 st.warning(resultado.atualizacao_erro)
@@ -768,30 +757,30 @@ Conta não encontrada no Salesforce. Para reclassificar, o cliente já deve esta
 
     dados = st.session_state.ultimo_resultado
     if dados:
-        ranking_txt = html.escape(str(dados.get("ranking_conta") or "—"))
         rank_antigo = html.escape(str(dados.get("ranking_anterior") or "—"))
-        nome_cli = html.escape(str(dados.get("nome_cliente") or "Cliente"))
+        rank_novo = html.escape(str(dados.get("ranking_novo") or "—"))
 
-        st.markdown(
-            f"""
-<div class="reclass-account-details">
-  <div><strong>Cliente:</strong> {nome_cli}</div>
-  <div><strong>Ranking Anterior:</strong> {rank_antigo}</div>
-  <div><strong>Status:</strong> Reclassificado com Sucesso</div>
-</div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        st.markdown(
-            f"""
+        col_antigo, col_novo = st.columns(2)
+        with col_antigo:
+            st.markdown(
+                f"""
 <div class="ranking-kpi">
-  <div class="lbl">Novo Ranking do Cliente</div>
-  <div class="val">{ranking_txt}</div>
+  <div class="lbl">Ranking Anterior</div>
+  <div class="val">{rank_antigo}</div>
 </div>
-            """,
-            unsafe_allow_html=True,
-        )
+                """,
+                unsafe_allow_html=True,
+            )
+        with col_novo:
+            st.markdown(
+                f"""
+<div class="ranking-kpi">
+  <div class="lbl">Novo Ranking</div>
+  <div class="val">{rank_novo}</div>
+</div>
+                """,
+                unsafe_allow_html=True,
+            )
 
     _rodape_pagina()
 
