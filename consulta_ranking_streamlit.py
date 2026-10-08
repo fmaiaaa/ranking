@@ -193,7 +193,7 @@ def _cabecalho_pagina() -> None:
     st.markdown(
         f'<div class="ficha-hero-stack">'
         f'<div class="ficha-hero">'
-        f'<p class="ficha-title">Consulta de Ranking</p>'
+        f'<p class="ficha-title">Consulta de Ranking - Qualquer Cliente</p>'
         f"</div>"
         f'<div class="ficha-hero-bar-wrap" aria-hidden="true">'
         f'<div class="ficha-hero-bar"></div>'
