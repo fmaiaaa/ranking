@@ -4,12 +4,12 @@ Reclassificador de Ranking do Cliente — Direcional
 Layout e estrutura alinhados a consulta_ranking_streamlit.py.
 
 Fluxo:
-  - Localiza Account no Salesforce por CPF.
-  - Se a conta não existir, alerta o utilizador e bloqueia a reclassificação.
-  - Existindo, exibe os dados da conta e permite selecionar o novo Ranking.
-  - Persiste a atualização no Salesforce e reflete o novo status no KPI.
+  - Localiza a Account existente no Salesforce por CPF.
+  - Se a conta não existir, encerra com aviso visual padronizado.
+  - Existindo a conta, aciona o fluxo de reclassificação forçando nova análise (Risk3).
+  - Executa o polling até obter o novo parecer e exibe o novo ranking no KPI.
 
-Logos e recursos esperados na raiz do repositório:
+Logos esperadas na raiz do repositório:
   - 502.57_LOGO DIRECIONAL_V2F-01.png
   - 502.57_LOGO D_COR_V3F.png
   - fundo_cadastrorh.jpg (opcional)
@@ -20,12 +20,13 @@ from __future__ import annotations
 import base64
 import html
 import os
+import time
 from pathlib import Path
 
 import streamlit as st
 from tqdm import tqdm
 
-from ranking_cliente import normalizar_cpf
+from ranking_cliente import consultar_ranking, normalizar_cpf, regional_comercial_padrao
 from salesforce_api import conectar_salesforce
 
 _DIR_APP = Path(__file__).resolve().parent
@@ -40,6 +41,8 @@ COR_BORDA = "#eef2f6"
 COR_TEXTO_PRETO = "#000000"
 COR_TEXTO_MUTED = "#64748b"
 COR_INPUT_BG = "#f0f2f6"
+TIMEOUT_CONSULTA_SEG = 90.0
+INTERVALO_POLL_SEG = 5.0
 
 
 def _hex_rgb_triplet(hex_color: str) -> str:
@@ -56,7 +59,7 @@ RGB_VERMELHO_CSS = _hex_rgb_triplet(COR_VERMELHO)
 class TqdmDirecional:
     """Barra tqdm com gradiente azul → vermelho Direcional para o Streamlit."""
 
-    def __init__(self, total: int, desc: str = "A processar..."):
+    def __init__(self, total: int, desc: str = "Reclassificando ranking..."):
         self.total = max(1, total)
         self.desc = desc
         self.n = 0
@@ -97,6 +100,11 @@ class TqdmDirecional:
             """,
             unsafe_allow_html=True,
         )
+
+
+def total_passos_consulta() -> int:
+    poll_passos = int(TIMEOUT_CONSULTA_SEG / INTERVALO_POLL_SEG)
+    return poll_passos + 4
 
 
 def _resolver_png_raiz(nome: str) -> Path | None:
@@ -148,8 +156,22 @@ def _logo_arquivo_local() -> str | None:
     return None
 
 
+def _logo_url_secrets() -> str | None:
+    try:
+        if hasattr(st, "secrets"):
+            b = st.secrets.get("branding")
+            if isinstance(b, dict):
+                u = (b.get("LOGO_URL") or "").strip()
+                if u:
+                    return u
+    except Exception:
+        pass
+    return None
+
+
 def _exibir_logo_topo() -> None:
     path = _logo_arquivo_local()
+    url = _logo_url_secrets()
     try:
         if path:
             ext = Path(path).suffix.lower().lstrip(".")
@@ -158,6 +180,12 @@ def _exibir_logo_topo() -> None:
                 b64 = base64.b64encode(f.read()).decode("ascii")
             st.markdown(
                 f'<div class="ficha-logo-wrap"><img src="data:{mime};base64,{b64}" alt="Direcional" /></div>',
+                unsafe_allow_html=True,
+            )
+            return
+        if url:
+            st.markdown(
+                f'<div class="ficha-logo-wrap"><img src="{html.escape(url)}" alt="Direcional" /></div>',
                 unsafe_allow_html=True,
             )
     except Exception:
@@ -169,7 +197,7 @@ def _cabecalho_pagina() -> None:
     st.markdown(
         f'<div class="ficha-hero-stack">'
         f'<div class="ficha-hero">'
-        f'<p class="ficha-title">Reclassificador de Ranking</p>'
+        f'<p class="ficha-title">Reclassificação de Ranking</p>'
         f"</div>"
         f'<div class="ficha-hero-bar-wrap" aria-hidden="true">'
         f'<div class="ficha-hero-bar"></div>'
@@ -239,7 +267,6 @@ def aplicar_estilo() -> None:
         }}
         [data-testid="stTextInput"] input,
         [data-testid="stTextInput"] label,
-        [data-testid="stSelectbox"] label,
         [data-testid="stWidgetLabel"] p,
         [data-testid="stMarkdownContainer"] p,
         .stAlert,
@@ -247,8 +274,7 @@ def aplicar_estilo() -> None:
             color: {COR_TEXTO_PRETO} !important;
         }}
         div[data-baseweb="input"],
-        .stApp[data-theme="dark"] div[data-baseweb="input"],
-        div[data-baseweb="select"] > div {{
+        .stApp[data-theme="dark"] div[data-baseweb="input"] {{
             background-color: {COR_INPUT_BG} !important;
             color: {COR_TEXTO_PRETO} !important;
         }}
@@ -335,14 +361,6 @@ def aplicar_estilo() -> None:
             width: 100%;
             margin: clamp(1rem, 2.8vw, 1.45rem) 0 1.75rem;
         }}
-        .ficha-hero-bar {{
-            height: 4px;
-            width: 100%;
-            border-radius: 999px;
-            background: linear-gradient(90deg, {COR_AZUL_ESC}, {COR_VERMELHO}, {COR_AZUL_ESC});
-            background-size: 200% 100%;
-            animation: fichaShimmer 4s ease-in-out infinite alternate;
-        }}
         .page-footer {{
             font-family: 'Inter', sans-serif;
             font-size: 0.88rem;
@@ -356,8 +374,22 @@ def aplicar_estilo() -> None:
             text-transform: lowercase;
             width: 100%;
         }}
-        div[data-baseweb="input"],
-        div[data-baseweb="select"] > div {{
+        [data-testid="stTextInput"],
+        [data-testid="stButton"],
+        .direcional-tqdm,
+        .ranking-kpi {{
+            width: 100% !important;
+            max-width: 100% !important;
+        }}
+        .ficha-hero-bar {{
+            height: 4px;
+            width: 100%;
+            border-radius: 999px;
+            background: linear-gradient(90deg, {COR_AZUL_ESC}, {COR_VERMELHO}, {COR_AZUL_ESC});
+            background-size: 200% 100%;
+            animation: fichaShimmer 4s ease-in-out infinite alternate;
+        }}
+        div[data-baseweb="input"] {{
             border-radius: 12px !important;
             border: 1px solid #e2e8f0 !important;
             background-color: {COR_INPUT_BG} !important;
@@ -369,7 +401,6 @@ def aplicar_estilo() -> None:
             padding-bottom: 14px !important;
         }}
         [data-testid="stTextInput"] label p,
-        [data-testid="stSelectbox"] label p,
         [data-testid="stWidgetLabel"] p {{
             font-size: 1rem !important;
             font-weight: 600 !important;
@@ -395,13 +426,18 @@ def aplicar_estilo() -> None:
         .stButton button[kind="primary"]:hover {{
             background: {COR_VERMELHO_ESCURO} !important;
         }}
-        .reclass-info-card {{
-            background: rgba(248, 250, 252, 0.85);
+        .reclass-account-details {{
+            background: #ffffff;
             border: 1px solid #e2e8f0;
             border-left: 4px solid {COR_AZUL_ESC};
             border-radius: 12px;
-            padding: 18px 24px;
-            margin: 1.25rem 0 1.5rem;
+            padding: 16px 20px;
+            margin-top: 14px;
+            margin-bottom: 14px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            font-size: 0.95rem;
         }}
         .ranking-kpi {{
             background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,251,252,0.9) 100%);
@@ -416,6 +452,10 @@ def aplicar_estilo() -> None:
             display: flex;
             flex-direction: column;
             justify-content: center;
+        }}
+        .ranking-kpi:hover {{
+            transform: translateY(-4px);
+            box-shadow: 0 10px 20px -5px rgba({RGB_AZUL_CSS}, 0.15);
         }}
         .ranking-kpi .lbl {{
             font-size: 0.82rem;
@@ -479,6 +519,99 @@ def aplicar_estilo() -> None:
             background: linear-gradient(90deg, {COR_AZUL_ESC} 0%, {COR_VERMELHO} 100%);
             transition: width 0.35s ease;
         }}
+
+        @media (max-width: 768px) {{
+            [data-testid="stMain"] {{
+                padding-left: 6px !important;
+                padding-right: 6px !important;
+                padding-top: 8px !important;
+                padding-bottom: 8px !important;
+                min-height: auto !important;
+                align-items: stretch !important;
+                justify-content: flex-start !important;
+            }}
+            section.main > div {{
+                align-items: stretch !important;
+                justify-content: flex-start !important;
+            }}
+            .block-container {{
+                width: 100% !important;
+                max-width: 100% !important;
+                margin: 0 !important;
+                padding: 1.15rem 0.9rem 1rem 0.9rem !important;
+                min-height: auto !important;
+                border-radius: 6px !important;
+                box-sizing: border-box !important;
+            }}
+            .ficha-logo-wrap img {{
+                max-height: 56px;
+                max-width: 72vw;
+            }}
+            .ficha-hero .ficha-title {{
+                font-size: 1.28rem;
+                letter-spacing: 0;
+            }}
+            .ficha-hero-bar-wrap {{
+                margin: 0.85rem 0 1.15rem;
+            }}
+            .ficha-hero-bar {{
+                border-radius: 2px;
+                height: 3px;
+            }}
+            div[data-baseweb="input"] {{
+                border-radius: 6px !important;
+                min-height: 48px !important;
+            }}
+            div[data-baseweb="input"] input {{
+                font-size: 1rem !important;
+                padding-top: 12px !important;
+                padding-bottom: 12px !important;
+            }}
+            .stButton button {{
+                border-radius: 6px !important;
+                height: 48px !important;
+                min-height: 48px !important;
+                font-size: 0.92rem !important;
+            }}
+            .ranking-kpi {{
+                border-radius: 6px;
+                padding: 1.25rem 0.85rem;
+                min-height: 110px;
+            }}
+            .ranking-kpi .val {{
+                font-size: 1.35rem;
+            }}
+            .direcional-tqdm {{
+                margin: 1rem 0 1.1rem;
+            }}
+            .direcional-tqdm-header {{
+                font-size: 0.88rem;
+                gap: 0.35rem;
+            }}
+            .direcional-tqdm-desc {{
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                max-width: 62%;
+            }}
+            .direcional-tqdm-track {{
+                height: 12px;
+                border-radius: 2px;
+            }}
+            .direcional-tqdm-fill {{
+                border-radius: 2px;
+            }}
+            .page-footer {{
+                margin-top: 1.75rem;
+                font-size: 0.8rem;
+            }}
+            [data-testid="column"],
+            [data-testid="stVerticalBlock"],
+            [data-testid="stHorizontalBlock"] {{
+                width: 100% !important;
+                max-width: 100% !important;
+            }}
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -493,11 +626,11 @@ def _resolver_favicon() -> str | None:
     return str(fallback) if fallback.is_file() else None
 
 
-def buscar_conta_salesforce(sf, cpf_digitos: str) -> dict | None:
-    """Busca conta existente pelo CPF normalizado ou formatado."""
+def buscar_conta_existente(sf, cpf_digitos: str) -> dict | None:
+    """Verifica se a conta já existe no Salesforce antes de disparar a reclassificação."""
     cpf_fmt = f"{cpf_digitos[:3]}.{cpf_digitos[3:6]}.{cpf_digitos[6:9]}-{cpf_digitos[9:]}"
     query = f"""
-        SELECT Id, Name, CPF__c, Ranking__c, Id_Risk3__c, Regional__c, Regional_Comercial__c
+        SELECT Id, Name, CPF__c, Ranking__c, Id_Risk3__c, Regional__c, Regional_Comercial__c, UltimaConsultaCPF__c
         FROM Account
         WHERE CPF__c = '{cpf_digitos}' OR CPF__c = '{cpf_fmt}'
         LIMIT 1
@@ -507,24 +640,21 @@ def buscar_conta_salesforce(sf, cpf_digitos: str) -> dict | None:
     return records[0] if records else None
 
 
-def atualizar_ranking_salesforce(sf, account_id: str, id_risk3: str | None, novo_ranking: str) -> bool:
+def preparar_para_reclassificacao(sf, account_id: str) -> None:
     """
-    Persiste o novo ranking na Account.
-    Usa preferencialmente o endpoint Apex REST '/update-ranking' quando id_risk3 estiver preenchido,
-    com fallback direto via sObject Account.
+    Limpa o Ranking__c atual e redefine a data para forçar nova esteira de análise (bypass de cache),
+    conforme previsto em IntegracaoRisk3.cls.
     """
-    if id_risk3:
-        try:
-            payload = {"id_risk3": id_risk3, "ranking": novo_ranking}
-            resp = sf.apexecute("update-ranking", method="POST", data=payload)
-            if "sucesso" in str(resp).lower():
-                return True
-        except Exception:
-            pass
-
-    # Atualização direta via sObject Account
-    sf.Account.update(account_id, {"Ranking__c": novo_ranking})
-    return True
+    try:
+        sf.Account.update(
+            account_id,
+            {
+                "Ranking__c": None,
+                "UltimaConsultaCPF__c": "2020-01-01"
+            }
+        )
+    except Exception:
+        pass
 
 
 def main() -> None:
@@ -538,14 +668,13 @@ def main() -> None:
 
     if "sf" not in st.session_state:
         st.session_state.sf = None
-    if "conta_localizada" not in st.session_state:
-        st.session_state.conta_localizada = None
-    if "reclassificacao_sucesso" not in st.session_state:
-        st.session_state.reclassificacao_sucesso = None
+    if "ultimo_resultado" not in st.session_state:
+        st.session_state.ultimo_resultado = None
 
     cpf_entrada = st.text_input("CPF do cliente", value="", placeholder="Ex.: 000.000.000-00")
+    regional = regional_comercial_padrao()
 
-    if st.button("Localizar Conta", type="primary", use_container_width=True, key="btn_localizar"):
+    if st.button("Reclassificar Conta", type="primary", use_container_width=True, key="btn_reclassificar"):
         texto = cpf_entrada.strip()
         if not texto:
             st.warning("Informe o CPF do cliente para continuar.")
@@ -554,108 +683,111 @@ def main() -> None:
             if len(cpf_digitos) != 11:
                 st.warning("O CPF deve conter 11 dígitos.")
             else:
+                # Conexão com Salesforce
                 if st.session_state.sf is None:
                     if "salesforce" in st.secrets:
                         sec = st.secrets["salesforce"]
                         os.environ["SALESFORCE_USER"] = sec.get("USER", "")
                         os.environ["SALESFORCE_PASSWORD"] = sec.get("PASSWORD", "")
                         os.environ["SALESFORCE_TOKEN"] = sec.get("TOKEN", "")
+                        if sec.get("REGIONAL_COMERCIAL"):
+                            os.environ["SALESFORCE_REGIONAL_COMERCIAL"] = str(
+                                sec.get("REGIONAL_COMERCIAL")
+                            ).strip()
                     with st.spinner("Conectando ao Salesforce..."):
                         sf = conectar_salesforce()
                     if not sf:
-                        st.error("Não foi possível conectar ao Salesforce. Verifique as credenciais.")
+                        st.error(
+                            "Não foi possível conectar ao Salesforce. "
+                            "Verifique a configuração das credenciais."
+                        )
                     else:
                         st.session_state.sf = sf
 
                 if st.session_state.sf is not None:
-                    barra = TqdmDirecional(total=4, desc="Localizando cadastro no Salesforce...")
-                    try:
-                        barra.update(1)
-                        conta = buscar_conta_salesforce(st.session_state.sf, cpf_digitos)
-                        barra.update(2)
-                    finally:
-                        barra.finish()
-                        barra.close()
-
-                    if not conta:
-                        st.session_state.conta_localizada = None
-                        st.session_state.reclassificacao_sucesso = None
+                    # 1. Validação estrita: a conta DEVE estar no Salesforce para reclassificar
+                    conta_existente = buscar_conta_existente(st.session_state.sf, cpf_digitos)
+                    
+                    if not conta_existente:
                         st.markdown(
                             f"""
 <div style="margin-top:16px; padding:12px 16px; border-radius:10px;
             border:1px solid {COR_VERMELHO}; background:#fff5f5;
             color:{COR_VERMELHO}; font-weight:600; text-align:center;">
-Conta não encontrada para o CPF informado no Salesforce.
+Conta não encontrada no Salesforce. Para reclassificar, o cliente já deve estar previamente cadastrado.
 </div>
                             """,
                             unsafe_allow_html=True,
                         )
+                        st.session_state.ultimo_resultado = None
                     else:
-                        st.session_state.conta_localizada = conta
-                        st.session_state.reclassificacao_sucesso = None
+                        # 2. Reseta o cache no Salesforce para disparar o recálculo / nova esteira
+                        preparar_para_reclassificacao(st.session_state.sf, conta_existente["Id"])
 
-    conta = st.session_state.conta_localizada
-    if conta:
-        nome_cliente = html.escape(str(conta.get("Name") or "Sem nome"))
-        cpf_cad = html.escape(str(conta.get("CPF__c") or "—"))
-        rank_atual = html.escape(str(conta.get("Ranking__c") or "Não informado"))
-        id_risk3 = html.escape(str(conta.get("Id_Risk3__c") or "—"))
+                        # 3. Dispara a reclassificação com a barra de progresso oficial
+                        barra = TqdmDirecional(
+                            total=total_passos_consulta(),
+                            desc="Disparando reclassificação e aguardando Risk3...",
+                        )
+                        try:
+                            # Reutiliza a lógica de consulta/polling do pacote, que agora processa a conta limpa
+                            resultado = consultar_ranking(
+                                st.session_state.sf,
+                                texto,
+                                regional_comercial=regional,
+                                timeout_seg=TIMEOUT_CONSULTA_SEG,
+                                intervalo_seg=INTERVALO_POLL_SEG,
+                                barra_progresso=barra,
+                            )
+                        finally:
+                            barra.finish()
+                            barra.close()
+
+                        if not resultado.ok and not resultado.ranking:
+                            st.markdown(
+                                f"""
+<div style="margin-top:16px; padding:12px 16px; border-radius:10px;
+            border:1px solid {COR_VERMELHO}; background:#fff5f5;
+            color:{COR_VERMELHO}; font-weight:600; text-align:center;">
+{html.escape(resultado.mensagem or "Reclassificação sem retorno de parecer.")}
+</div>
+                                """,
+                                unsafe_allow_html=True,
+                            )
+                            st.session_state.ultimo_resultado = None
+                        else:
+                            st.session_state.ultimo_resultado = {
+                                "ranking_conta": resultado.ranking,
+                                "nome_cliente": conta_existente.get("Name"),
+                                "ranking_anterior": conta_existente.get("Ranking__c") or "Não classificado",
+                            }
+                            if resultado.atualizacao_erro:
+                                st.warning(resultado.atualizacao_erro)
+                            elif not resultado.ranking:
+                                st.info(resultado.mensagem)
+
+    dados = st.session_state.ultimo_resultado
+    if dados:
+        ranking_txt = html.escape(str(dados.get("ranking_conta") or "—"))
+        rank_antigo = html.escape(str(dados.get("ranking_anterior") or "—"))
+        nome_cli = html.escape(str(dados.get("nome_cliente") or "Cliente"))
 
         st.markdown(
             f"""
-<div class="reclass-info-card">
-  <div style="font-size:1.05rem; font-weight:700; color:{COR_AZUL_ESC}; margin-bottom:8px;">Dados do Cliente</div>
-  <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:12px; font-size:0.92rem;">
-    <div><strong>Nome:</strong> {nome_cliente}</div>
-    <div><strong>CPF:</strong> {cpf_cad}</div>
-    <div><strong>Ranking Atual:</strong> <span style="color:{COR_VERMELHO}; font-weight:700;">{rank_atual}</span></div>
-    <div><strong>Id Risk3:</strong> {id_risk3}</div>
-  </div>
+<div class="reclass-account-details">
+  <div><strong>Cliente:</strong> {nome_cli}</div>
+  <div><strong>Ranking Anterior:</strong> {rank_antigo}</div>
+  <div><strong>Status:</strong> Reclassificado com Sucesso</div>
 </div>
             """,
             unsafe_allow_html=True,
         )
 
-        opcoes_ranking = [
-            "Não Classificado",
-            "A",
-            "B",
-            "C",
-            "D",
-            "Sem Margem",
-            "Reprovado",
-            "Pendente Análise"
-        ]
-        
-        idx_padrao = opcoes_ranking.index(rank_atual) if rank_atual in opcoes_ranking else 0
-        novo_rank = st.selectbox("Selecione a Nova Classificação", options=opcoes_ranking, index=idx_padrao)
-
-        if st.button("Confirmar Reclassificação", type="primary", use_container_width=True, key="btn_confirmar"):
-            barra_upd = TqdmDirecional(total=4, desc="A atualizar ranking no Salesforce...")
-            try:
-                barra_upd.update(1)
-                ok = atualizar_ranking_salesforce(
-                    st.session_state.sf,
-                    conta["Id"],
-                    conta.get("Id_Risk3__c"),
-                    novo_rank
-                )
-                barra_upd.update(2)
-            finally:
-                barra_upd.finish()
-                barra_upd.close()
-
-            if ok:
-                st.session_state.conta_localizada["Ranking__c"] = novo_rank
-                st.session_state.reclassificacao_sucesso = novo_rank
-
-    if st.session_state.reclassificacao_sucesso:
-        rank_val = html.escape(str(st.session_state.reclassificacao_sucesso))
         st.markdown(
             f"""
 <div class="ranking-kpi">
-  <div class="lbl">Novo Ranking Atualizado com Sucesso</div>
-  <div class="val">{rank_val}</div>
+  <div class="lbl">Novo Ranking do Cliente</div>
+  <div class="val">{ranking_txt}</div>
 </div>
             """,
             unsafe_allow_html=True,
