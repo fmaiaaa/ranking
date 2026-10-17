@@ -30,5 +30,5 @@ jobs:
           SF_USERNAME: ${{ secrets.SALESFORCE_USER }}
           SF_PASSWORD: ${{ secrets.SALESFORCE_PASSWORD }}
           SF_SECURITY_TOKEN: ${{ secrets.SALESFORCE_TOKEN }}
-          SF_DOMAIN: ${{ vars.SALESFORCE_DOMAIN }}
+          SF_DOMAIN: ${{ vars.SALESFORCE_DOMAIN || 'login' }}
         run: python cdc_test/smoke_test.py --seconds "${{ inputs.listen_seconds }}"
