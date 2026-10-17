@@ -1,0 +1,23 @@
+name: Salesforce CDC discovery
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: SALESFORCE
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install "simple-salesforce>=1.12,<2" "requests>=2.31,<3"
+      - name: Inspect CDC metadata and channel subscriptions
+        env:
+          SALESFORCE_USER: ${{ secrets.SALESFORCE_USER }}
+          SALESFORCE_PASSWORD: ${{ secrets.SALESFORCE_PASSWORD }}
+          SALESFORCE_TOKEN: ${{ secrets.SALESFORCE_TOKEN }}
+          SALESFORCE_DOMAIN: ${{ vars.SALESFORCE_DOMAIN || 'login' }}
+        run: python cdc_test/discover.py
