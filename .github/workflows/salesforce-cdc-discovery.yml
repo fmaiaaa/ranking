@@ -1,5 +1,9 @@
 name: Salesforce CDC discovery
 on:
+  push:
+    branches: [main]
+    paths:
+      - cdc_test/discover.py
   workflow_dispatch:
 permissions:
   contents: read
