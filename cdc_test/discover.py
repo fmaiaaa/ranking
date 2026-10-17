@@ -11,6 +11,13 @@ def main():
     base = "https://" + sf.sf_instance
     headers = {"Authorization": "Bearer " + sf.session_id}
     print("AUTH_OK")
+    query = "SELECT COUNT() FROM PlatformEventChannelMember WHERE EventChannel = 'ChangeEvents'"
+    r = requests.get(base + "/services/data/v60.0/tooling/query",
+                     params={"q": query}, headers=headers, timeout=25)
+    if r.ok:
+        print("DEFAULT_CDC_SELECTED_ENTITY_COUNT", r.json()["totalSize"])
+    else:
+        print("DEFAULT_CDC_SELECTION_UNAVAILABLE HTTP", r.status_code)
     for api, query in [
         ("tooling", "SELECT DeveloperName, MasterLabel FROM PlatformEventChannel LIMIT 100"),
         ("tooling", "SELECT DeveloperName, EventChannel FROM PlatformEventChannelMember LIMIT 100"),
