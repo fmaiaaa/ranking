@@ -1,12 +1,17 @@
 name: Salesforce CDC event reception
 on:
+  push:
+    branches: [main]
+    paths:
+      - cdc_test/listen.py
+      - .github/workflows/salesforce-cdc-listen.yml
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   listen:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 8
     environment: SALESFORCE
     steps:
       - uses: actions/checkout@v4
@@ -14,10 +19,14 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install "simple-salesforce>=1.12,<2" "requests>=2.31,<3"
-      - name: Listen for CDC events for 90 seconds
+      - name: Test listener recovery without Salesforce
+        run: python -m unittest discover -s cdc_test -p "test_listen.py"
+      - name: Observe live and retained CDC events
         env:
           SALESFORCE_USER: ${{ secrets.SALESFORCE_USER }}
           SALESFORCE_PASSWORD: ${{ secrets.SALESFORCE_PASSWORD }}
           SALESFORCE_TOKEN: ${{ secrets.SALESFORCE_TOKEN }}
           SALESFORCE_DOMAIN: ${{ vars.SALESFORCE_DOMAIN || 'login' }}
-        run: python cdc_test/listen.py
+        run: |
+          CDC_REPLAY=-1 python -u cdc_test/listen.py
+          CDC_REPLAY=-2 python -u cdc_test/listen.py
